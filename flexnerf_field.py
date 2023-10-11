@@ -20,265 +20,542 @@ from nerfstudio.field_components.mlp import MLP
 from nerfstudio.field_components.spatial_distortions import SpatialDistortion
 from nerfstudio.fields.base_field import Field, get_normalized_directions
 
+def to_canonical(xyz, cell_xyz):
+    xyz: Tensor[sample_num, 3]
+    cell_xyz: Tensor[sample_num, 4, 3]
+    canonical: Tensor[sample_num, 4]
+
+    # [a, b, c, d] @ convert_matrix = [x, y, z, 1]
+    convert_matrix = torch.transpose( torch.concatenate(cell_xyz, torch.ones_like(xyz).view(-1,3,1), axis=-1), 1,2)
+    convert_xyz = torch.concatenate(xyz, torch.ones_like(xyz[:,:1]), axis=-1)
+    canonical = torch.linalg.solve(convert_matrix, convert_xyz)
+    return canonical
+
 def interpolate_field_value(xyz, cells):
     xyz: Tensor[sample_num, each_cell_num, 3] or Tensor[sample_num, 3]
-    cell_xyz: Tensor[sample_num, 8, 3]
+    cell_xyz: Tensor[sample_num, 4, 3]
 
-    xyz_shape = xyz.shape
-    if len(xyz_shape) == 3:
+    if len(xyz.shape) == 3:
         xyz = xyz.view(-1,3)
-        cell_xyz = cells["xyz"].unsqueeze(1).expand(-1, xyz_shape[1], -1, -1).view(-1, 8, 3)
-        cell_feature = cells["feature"].unsqueeze(1).expand(-1, xyz_shape[1], -1, -1).view(xyz_shape[0]*xyz_shape[1], 8, -1)
+        cell_xyz = cells["xyz"].unsqueeze(1).expand(-1, xyz.shape[1], -1, -1).view(-1, 4, 3)
+        cell_feature = cells["feature"].unsqueeze(1).expand(-1, xyz.shape[1], -1, -1).view(xyz.shape[0]*xyz.shape[1], 4, -1)
     else:
         cell_xyz = cells["xyz"]
         cell_feature = cells["feature"]
 
-    #TODO: trilinear interpolation, should be later changed to more subtule tetrahedron interpolation
-    canonical = (xyz - cell_xyz[:,0,:]) / (cell_xyz[:,7,:] - cell_xyz[:,0,:])
-    canonical_contrast = torch.stack((1-canonical, canonical), 1) # Tensor[sample_num, 2, 3]
-    canonical_factor = (canonical_contrast[:,:,0].unsqueeze(-1).unsqueeze(-1).expand(-1, 2, 2, 2) *\
-                        canonical_contrast[:,:,1].unsqueeze( 1).unsqueeze(-1).expand(-1, 2, 2, 2) *\
-                        canonical_contrast[:,:,2].unsqueeze( 1).unsqueeze( 1).expand(-1, 2, 2, 2)).view(-1,8,1)
-    interpolated_feature = torch.sum(cell_feature * canonical_factor, axis=1)
-    if len(xyz_shape) == 3:
+    canonical = to_canonical(xyz, cell_xyz).unsqueeze(-1)
+    interpolated_feature = torch.sum(cell_feature * canonical, axis=1)
+    if len(xyz.shape) == 3:
         interpolated_feature = interpolated_feature.view(xyz.shape[0], xyz.shape[1], -1)
     return interpolated_feature
 
-class SingleLayerTetra(nn.Module):
-    def __init__(self,
-                point_count,
-                original_count,
-                feature_dim):
-        super().__init__()
-        self.register_buffer("point_count", point_count)
-        self.register_buffer("original_count", torch.tensor(original_count))
-        self.register_buffer("extend_count", point_count - original_count)
-        self.feature_dim = feature_dim
-        # can be divided into two parts, 
-        # the first `self.original_count` rows for original points,
-        # the following `self.extend_count` rows for extend points.
-        self.register_parameter(
-            "field",
-            nn.Parameter(
-                torch.zeros((self.point_count, self.feature_dim), dtype=torch.float32)
-            ),
-        )
-        self.register_buffer(
-            "xyz",
-            torch.zeros((self.point_count, 3),dtype=torch.float32)
-        )
-        # note: child_index < original_count for child in original field, child_index >= original_count for child in extend field; child_index == -1 for non existing child(should use interpolation); child_index[:,0] := -1
-        self.register_buffer(
-            "child_index",
-            torch.zeros((self.point_count, 27), dtype=torch.int32)
-        )
-        self.register_buffer(
-            "neighbor_index",
-            torch.zeros((self.point_count, 7), dtype=torch.int32)
-        )
-        self.register_buffer(
-            "parent_index",
-            torch.zeros((self.point_count), dtype=torch.int32)
-        )
-        self.register_buffer(
-            "importance",
-            torch.zeros((self.point_count), dtype=torch.float32)
-        )
+def divide_into_children(xyz, cells):
+    xyz: Tensor[sample_num, each_cell_num, 3] or Tensor[sample_num, 3]
+    cell_xyz: Tensor[sample_num, 8, 3]
+    cell_cut: Tensor[sample_num, 2]
 
-    def search_next_layer(self, xyz, parent_cell, child_layer, mode="extend"):
-        '''
-        given a batched coordinates `xyz`, and a batched known cubic cells `parent_cell`, 
-        the child_layer to be searched and a mode determining whether to use the extend field("original" or "extend").
-        return a child cell, that is property(index in child_layer, feature value, xyz) of the eight vertices of the cell;
-        if a vertex does not exist in the child_layer, set its feature value to be the interpolation value in the parent cell,
-        its index to be nan or something.
-        '''
-        # parent_cell = {"vertices_id":cell_vertices_id, "feature":cell_feature, "xyz":cell_xyz}
-        cell_vertices_id = parent_cell["vertices_id"]
-        cell_feature = parent_cell["feature"]
-        cell_xyz = parent_cell["xyz"]
+    if len(xyz.shape) == 3:
+        xyz = xyz.view(-1,3)
+        cell_xyz = cells["xyz"].unsqueeze(1).expand(-1, xyz.shape[1], -1, -1).view(-1, 4, 3)
+        cell_cut = cells["cut"].unsqueeze(1).expand(-1, xyz.shape[1], -1).view(xyz.shape[0]*xyz.shape[1], -1)
+    else:
+        cell_xyz = cells["xyz"]
+        cell_cut = cells["cut"]
 
-        canonical = (xyz - cell_xyz[:,0,:]) / (cell_xyz[:,7,:] - cell_xyz[:,0,:])
-        canonical_child_grid = torch.tensor([0,1/3,2/3,1], device=canonical)
-        satisfied_x = (canonical_child_grid.unsqueeze(0).expand(canonical.shape[:-1]) <= canonical[:,:,0])
-        satisfied_y = (canonical_child_grid.unsqueeze(0).expand(canonical.shape[:-1]) <= canonical[:,:,1])
-        satisfied_z = (canonical_child_grid.unsqueeze(0).expand(canonical.shape[:-1]) <= canonical[:,:,2])
-        child_cell_id_x = torch.sum(satisfied_x, axis=1) - 1
-        child_cell_id_y = torch.sum(satisfied_y, axis=1) - 1
-        child_cell_id_z = torch.sum(satisfied_z, axis=1) - 1
+    canonical = to_canonical(xyz, cell_xyz)
 
-        # first level index
-        parent_id = torch.ones_like(cell_vertices_id)
-        parent_id[:,0] = cell_vertices_id[:,0]
-        parent_id[:,[1,3,5,7]] = torch.where(child_cell_id_z==2, \
-                                            cell_vertices_id[:,1].unsqueeze(-1), \
-                                            parent_id[:,0].unsqueeze(-1))
-        parent_id[:,[2,3,6,7]] = torch.where(child_cell_id_y==2, \
-                                            cell_vertices_id[:,2].unsqueeze(-1), \
-                                            parent_id[:,0])
-        parent_id[:,[4,5,6,7]] = torch.where(child_cell_id_x==2, \
-                                            cell_vertices_id[:,4].unsqueeze(-1), \
-                                            parent_id[:,0].unsqueeze(-1))
-        parent_id[:,[3,7]] = torch.where(torch.logical_and(child_cell_id_y==2, child_cell_id_z==2), \
-                                        cell_vertices_id[:,3].unsqueeze(-1), \
-                                        parent_id[:,3].unsqueeze(-1))
-        parent_id[:,[5,7]] = torch.where(torch.logical_and(child_cell_id_x==2, child_cell_id_z==2), \
-                                        cell_vertices_id[:,5].unsqueeze(-1), \
-                                        parent_id[:,5].unsqueeze(-1))
-        parent_id[:,[6,7]] = torch.where(torch.logical_and(child_cell_id_x==2, child_cell_id_y==2), \
-                                        cell_vertices_id[:,6].unsqueeze(-1), \
-                                        parent_id[:,6].unsqueeze(-1))
-        parent_id[:,7] = torch.where(torch.logical_and(torch.logical_and(child_cell_id_x==2, \
-                                                                        child_cell_id_x==2,  \
-                                                                        child_cell_id_x==2)), \
-                                    cell_vertices_id[:,7].unsqueeze(-1), \
-                                    parent_id[:,7].unsqueeze(-1))
-
-        # second level index
-        child_id = torch.ones_like(cell_vertices_id)
-        child_id_base = torch.stack((child_cell_id_x, child_cell_id_y, child_cell_id_z), axis=1).view(-1,1,3)
-        child_id_offset = torch.zeros(2,2,2,3, dtype=torch.int32, device=child_id.device)
-        child_id_offset[1,:,:,0] = 1
-        child_id_offset[:,1,:,1] = 1
-        child_id_offset[:,:,1,2] = 1
-        child_id_3d = (child_id_base + child_id_offset.view(1,8,3)) % torch.tensor([[[3,3,3]]], dtype=torch.int32, device=cell_vertices_id.device)
-        child_id = torch.sum( (child_id_3d)*torch.tensor([[[9,3,1]]], dtype=torch.int32, device=cell_vertices_id.device), axis=-1)
-
-        # final level index
-        child_cell_vertices_id = self.child_index[parent_id, child_id]
-        child_cell_vertices_id = torch.where(parent_id == -1, -1, child_cell_vertices_id)
-
-        # set return dict
-        child_cell_canonical = (child_id_base + child_id_offset.view(1,8,3)) / 3
-        child_cell_xyz = cell_xyz[:,0,:] + child_cell_canonical * (cell_xyz[:,7,:]-cell_xyz[:,0,:]).unsqueeze(1)
-        child_cell_feature = child_layer.field[child_cell_vertices_id, :]
-        # when get `child_cell_vertices_id == -1`, it means that the child cell is not set. (although indexing in the last layer would get the last element of the array instead of throwing error)
-        child_cell_invalid_mask = (child_cell_vertices_id == -1)
-        if mode == "original":
-            child_cell_extend_mask = (child_cell_vertices_id >= child_layer.original_count)
-            child_cell_invalid_mask = torch.logical_or(child_cell_invalid_mask, child_cell_extend_mask)
-        #! the interpolation better involve other sampled points in this cell
-
-        child_cell_interpolate_feature = interpolate_field_value(child_cell_xyz, parent_cell)
-        child_cell_feature = torch.where(child_cell_invalid_mask, child_cell_interpolate_feature, child_cell_feature)
-        return {"vertices_id":child_cell_vertices_id, "feature":child_cell_feature, "xyz":child_cell_xyz}
-
-    def merge_extend_field(self):
-        '''
-        merge the extend field to the original field and empty the extend field;
-        the extend field and the original field must be on the same layer.
-        point number after merging should be determined according to distribution, for example, merge 13 out of 27
-        '''
-        #TODO: force the number of original points to be less then 1/4 of point_count
-        pass
-
-    def guide_next_layer(self, child_layer):
-        '''
-        guide the creation of extend field of a child_layer, after it is created or emptied.
-        create children vertices for original_points as many as possible, 
-        init feature values to be interpolation values, parent/neighbor/child index and xyz as they should be.
-        #! remember to set child_index[:,0] = -1
-        '''
-        if child_extend_point_count > child_layer.point_count:
-            #TODO: each original point should have different number of extend points
-            #TODO: 26->8->4->1
-            pass
-
-    def organize_field_0(self, aabb):
-        resolution = int(pow(self.point_count, 1/3)+0.1)
-        
-        min_x = aabb[0][0]
-        min_y = aabb[0][1]
-        min_z = aabb[0][2]
-        max_x = aabb[1][0]
-        max_y = aabb[1][1]
-        max_z = aabb[1][2]
-        axis_grid = torch.arange(resolution, device=self.field.device).unsqueeze(0).unsqueeze(0).expand((resolution, resolution, resolution))
-        x = ( min_x + (max_x-min_x)/(resolution-1)*axis_grid ).transpose(2,0)
-        y = ( min_y + (max_y-min_y)/(resolution-1)*axis_grid ).transpose(2,1)
-        z = ( min_z + (max_z-min_z)/(resolution-1)*axis_grid )
-        self.xyz.copy_(torch.stack((x,y,z), axis=-1).reshape(-1,3))
-
-        index_grid = torch.arange(self.point_count, device=self.field.device).view(resolution, resolution, resolution)
-        offset = index_grid[:2,:2,:2].reshape(8)[1:].unsqueeze(0).expand(resolution, resolution, resolution, 7)
-        neighbor = index_grid.unsqueeze(-1).expand(-1, -1, -1, 7) + offset
-        neighbor[-1,:,:,[3,4,5,6]] = -1
-        neighbor[:,-1,:,[1,2,5,6]] = -1
-        neighbor[:,:,-1,[0,2,4,6]] = -1
-        self.neighbor_index.copy_(neighbor.view(-1,7))
-        self.parent_index.copy_(-1*torch.ones_like(self.parent_index))
-
-    def search_field_0(self, xyz):
-        resolution = int(pow(self.point_count, 1/3)+0.1)
-
-        xyz: Tensor[sample_num, 3]
-        self.xyz: Tensor[resolution, resolution, resolution, 3]
-        xyz_expand = xyz.unsqueeze(1).expand(-1, resolution, 3).view(-1, resolution, 3)
-        self_xyz_reshape = self.xyz.view(resolution, resolution, resolution, 3)
-        satisfied_x = (self_xyz_reshape[:,0,0,0].unsqueeze(0).expand(xyz_expand.shape[:-1]) <= xyz_expand[:,:,0])
-        satisfied_y = (self_xyz_reshape[0,:,0,1].unsqueeze(0).expand(xyz_expand.shape[:-1]) <= xyz_expand[:,:,1])
-        satisfied_z = (self_xyz_reshape[0,0,:,2].unsqueeze(0).expand(xyz_expand.shape[:-1]) <= xyz_expand[:,:,2])
-        cell_id_x = torch.sum(satisfied_x, axis=1) - 1
-        cell_id_y = torch.sum(satisfied_y, axis=1) - 1
-        cell_id_z = torch.sum(satisfied_z, axis=1) - 1
-        # cell_id = torch.stack((cell_id_x, cell_id_y, cell_id_z), axis=-1) - 1
-        cell_id = resolution*(resolution*cell_id_x + cell_id_y) + cell_id_z
-
-        neighbor_id = self.neighbor_index[cell_id, :]
-        cell_vertices_id = torch.concatenate((cell_id.view(-1, 1), neighbor_id), axis=1)
-        cell_feature = self.field[cell_vertices_id, :]
-        cell_xyz = self.xyz[cell_vertices_id, :]
-        return {"vertices_id":cell_vertices_id, "feature":cell_feature, "xyz":cell_xyz}
+    canonical_cut = torch.gather(canonical, 1, cell_cut)
+    children_choice = (canonical_cut[:,0] - canonical_cut[:,1] > 0).int()
+    # return shape of (sample_num)
+    return children_choice
 
 class MultiLayerTetra(nn.Module):
     def __init__(self,
                 aabb,
                 feature_dim = 32,
-                xyz_resolution=torch.tensor([4,4,4]),
                 max_layer_num=8,
-                max_point_per_layer=1e5):
+                max_cell_count=1e6,
+                max_point_count=1e6):
         super().__init__()
         # this list is hard to be reorganized, if using model.load, this list will not reorganize itself, but only the underlying parameters and buffers
-        self.add_module("tetra_list", nn.ModuleList())
         self.register_buffer("aabb", aabb)
         self.register_buffer("feature_dim", torch.tensor(feature_dim))
-        self.register_buffer("xyz_resolution", xyz_resolution)
         self.register_buffer("max_layer_num", torch.tensor(max_layer_num))
-        self.register_buffer("max_point_per_layer", torch.tensor(max_point_per_layer))
-        self.register_buffer("first_layer_point_num", torch.prod(xyz_resolution))
-        assert 27*self.first_layer_point_num <= max_point_per_layer, "Variable `max_point_per_layer` is too small, it at least need to contain all points on the second layer"
+        self.register_buffer("max_cell_count", torch.tensor(max_cell_count))
+        self.register_buffer("max_point_count", torch.tensor(max_point_count))
+        self.register_buffer("first_layer_cell_num", 1)
+        assert 2*self.first_layer_cell_num <= max_cell_per_layer, "Variable `max_cell_per_layer` is too small, it at least need to contain all cells on the second layer"
 
-        self.set_mode("original")
+        # !note: cells or points are continuously stored, thus they span a range of cell_offset[i]~cell_offset[i+1]
+        #? this is currently not obeyed. all cells and points are not sorted, and we use cell_offset[-1] to find the range
+        # **original** cells or points are continuously stored
+        self.register_buffer("cell_offset", torch.zeros(max_layer_num+1, dtype=torch.int32))
+        self.register_buffer("point_offset", torch.zeros(max_layer_num+1, dtype=torch.int32))
+        # **extend** cells or points are continuously stored, 
+        # note that the first a few layers are fully covered by original, so extend_offset[i] == extend_offset[i+1] for them
+        # extend_offset[0] == 0, and it actually starts from original_offset[-1]
+        self.register_buffer("extend_cell_offset", torch.zeros(max_layer_num+1, dtype=torch.int32))
+        self.register_buffer("extend_point_offset", torch.zeros(max_layer_num+1, dtype=torch.int32))
 
-        self.tetra_list.append(
-            SingleLayerTetra(self.first_layer_point_num, 0, feature_dim)
+        # !note: the following values contain the important properties of the cell pool
+        self.register_buffer(
+            "child_index",
+            -1*torch.ones((self.max_cell_count, 2), dtype=torch.int32)
         )
-        self.tetra_list[0].organize_field_0(aabb)
+        self.register_buffer(
+            "point_index",
+            torch.zeros((self.cell_count, 4), dtype=torch.int32)
+        )
+        ## child_cut is the way it is sliced into current cell(1 of 6 edges, or 2 of 4 vertices)
+        self.register_buffer(
+            "child_cut",
+            -torch.ones((self.cell_count, 2), dtype=torch.int8)
+        )
+        self.child_cut[:,1] = 1
+        self.register_buffer(
+            "parent_index",
+            torch.zeros((self.cell_count), dtype=torch.int32)
+        )
+        ## note: this is the importance of each subdivision candidate. If you want to get the importance of a cell subdivision, one way is to set the importance to be the edge of parent cell's cut (perhaps compare to that without the subdivision afterwards).
+        self.register_buffer(
+            "importance",
+            torch.zeros((self.max_point_count, 6), dtype=torch.float16)
+        )
+        ## activation_layer stands for the layer where child cell is stored. That is, cells may have a cross-multi-layer parent-child relationship. 
+        ## note: A cell is only activated when seach_layer_i(i == activation_layer)
+        ## activation_layer in range(0, max_layer_num) for original; range(max_layer_num, 2*max_layer_num) for extend
+        self.register_buffer(
+            "activation_layer",
+            -torch.ones(self.max_cell_count, dtype=torch.int8)
+        )
+        ## layer is where the cell is stored, in another way, `parent.activation_layer == child.layer`
+        self.register_buffer(
+            "layer",
+            -torch.ones(self.max_cell_count, dtype=torch.int8)
+        )
+        ## sync_to and sync_to_trigger is for synchronize_cell2edge, representing how to transfer information between edges which concide with each other but are stored in different cells
+        self.register_buffer(
+            "sync_to_trigger",
+            -torch.ones(self.max_cell_count, 6, dtype=torch.int8)
+        )
+        self.register_buffer(
+            "sync_to",
+            -torch.ones(2, self.max_cell_count, 6, dtype=torch.int32)
+        )
+        ## neighbor means the face neighbor of the cell, each cell have 4 neighbor. it is like a face-wise `sync_to`
+        self.register_buffer(
+            "neighbor",
+            -torch.ones(2, self.max_cell_count, 4, dtype=torch.int32)
+        )
+
+        # !note: the following values contain the important properties of the point pool
+        self.register_parameter(
+            "field",
+            nn.Parameter(
+                torch.zeros((self.max_point_count, self.feature_dim), dtype=torch.float32)
+            ),
+        )
+        self.register_buffer(
+            "xyz",
+            torch.zeros((self.max_point_count, 3), dtype=torch.float32)
+        )
+
+        # !note: the following values contain some flags valueable in tree organization
+        self.register_buffer("syncing_sorted", torch.tensor([False]))
+        self.register_buffer("edge2point", torch.tensor([[0,1],[0,2],[0,3],[1,2],[1,3],[2,3]], dtype=torch.int8))
+        self.register_buffer("point2edge", torch.tensor([[-1,0,1,2], [0,-1,3,4], [1,3,-1,5], [2,4,5,-1], dtype=torch.int8))
+        self.register_buffer("face2point", torch.tensor([[1,2,3],[0,2,3],[0,1,3],[0,1,2]], dtype=torch.int8))
+
+        # !note: registering stop here, organize the first layer of tree and try sampling
+        self.organize_field_0()
         self.refine_samples()
 
-    def set_mode(self, mode):
-        # mode can be "original" or "extend"
-        self.mode = mode
-
-    def refine_samples(self):
-        for i in range(1, len(self.tetra_list)):
-            self.tetra_list[i].merge_extend_field()
-        l = len(self.tetra_list)
-        if l < self.max_layer_num-1:
-            point_count = min( pow(27, l)*self.first_layer_point_num, self.max_point_per_layer)
-            self.tetra_list.append(
-                SingleLayerTetra(point_count, point_count, self.feature_dim).to(self.aabb.device)
-            )
-            l += 1
-        for i in range(l-1):
-            self.tetra_list[i].guide_next_layer(self.tetra_list[i+1])
+    def refine_samples(self, update_original):
+        self.remove_last_sampled()
+        if update_original:
+            self.merge_extend()
+        edge_valid = self.sample_extend()
+        self.apply_sampled(edge_valid)
 
     def forward(self, xyz):
-        cells = []
-        cells.append(self.tetra_list[0].search_field_0(xyz))
-        for i in range(len(self.tetra_list)-1):
-            cells.append(self.tetra_list[i].search_next_layer(xyz, cells[-1], self.tetra_list[i+1], mode=self.mode))
-        return interpolate_field_value(xyz, cells[-1])
+        cells = self.search_field_0(xyz)
+        for i in range(1, max_layer_num-1):
+            cells = self.search_layer_i(xyz, cells, i))
+        if self.mode == "extend":
+            cells = self.search_extend(xyz, cells)
+        feature = interpolate_field_value(xyz, cells)
+        return feature
+
+    # ! detailed function definition starts here
+    def organize_layer_0(self):
+        self.set_layer_cell_size(0,1, mode="original")
+        self.set_layer_point_size(0,4, mode="original")
+        self.point_index[:1,:] = torch.arange(4, device=self.point_index.device).view(1,4)
+        self.layer[:1] = 0
+        self.sync_to_trigger[:1] = 0
+
+        point_xyz = self.get_tetra_xyz(aabb)
+        self.xyz[:4,:] = point_xyz
+
+        #? temporarily use cell_offset[-1] instead of cell_offset[1], that is, the cells and points are not sorted
+        self.cell_offset[0] = 0
+        self.cell_offset[-1] = 1
+        self.point_offset[0] = 0
+        self.point_offset[-1] = 4
+    
+    def search_layer_0(self, xyz):
+        sample_size = xyz.shape[0]
+
+        cell_id = torch.zeros(sample_size, dtype=torch.int32, device=xyz.device)
+        cell_xyz = self.xyz[:4, :].view(1,4,3).expand(sample_size, 4, 3)
+        cell_feature = self.field[:4, :].view(1,4,-1).expand(sample_size, 4, -1)
+
+        cut = self.child_cut[:1, :].view(1, 2).expand(sample_size, 2)
+        activation_layer = self.activation_layer[:1].expand(sample_size)
+
+        return {"cell_id":          cell_id, 
+                "xyz":              cell_xyz, 
+                "feature":          cell_feature, 
+                "cut":              cut, 
+                "activation_layer": activation_layer}
+
+    def search_layer_i(self, xyz, parent_cells, i):
+        sample_size = xyz.shape[0]
+
+        parent_id = parent_cells["cell_id"]
+        parent_xyz = parent_cells["xyz"]
+        parent_feature = parent_cells["feature"]
+        parent_cut = parent_cells["cut"]
+        parent_activation_layer = torch.min(parent_cells["activation_layer"], self.max_layer_num)
+
+        children_choice = divide_into_children(xyz, parent_cells)
+        # **child_cell_id
+        child_cell_id = self.child_index[parent_id, children_choice]
+        # **child_valid, mid variable
+        child_valid = torch.logical_and(parent_id != -1, child_cell_id != -1)
+        child_valid = torch.logical_and(child_valid, parent_activation_layer == i)
+        # **child_vertex_id, mid variable, now represented as abandoned_vertex & child_vertex_id_substitute
+        # only one vertex of the parent cell will change when divided into a subcell
+        ## element of abandoned_vertex is in 0,1,2,3
+        abandoned_vertex = torch.gather(parent_cut, 1, 1-children_choice.view(-1,1))
+        child_vertices_id_substitute = self.point_index[child_cell_id, abandoned_vertex]
+        # **child_feature
+        #? no longer needed, remove it later
+        child_feature = parent_feature.clone()
+        child_feature_substitute = self.field[child_vertices_id_substitute, :]
+        child_feature[torch.arange(sample_num), abandoned_vertex, :] = child_feature_substitute
+        # **child_xyz
+        child_xyz = parent_xyz.clone()
+        cut_point_xyz = parent_xyz[torch.arange(sample_num).view(-1,1), cell_cut, :]
+        child_xyz_substitute = torch.sum(cut_point_xyz, axis=1) / 2
+        child_xyz[torch.arange(sample_num), abandoned_vertex, :] = child_xyz_substitute
+        # **child_cut
+        child_cut = self.child_cut[child_cell_id, :]
+        # **child_activation_layer
+        child_activation_layer = self.activation_layer[child_cell_id]
+
+        # filter out inactivated cells
+        child_cell_id          = torch.where(child_valid,            child_cell_id,          parent_id)
+        child_feature          = torch.where(child_valid.view(-1,1), child_feature,          parent_feature)
+        child_xyz              = torch.where(child_valid.view(-1,1), child_xyz,              parent_xyz)
+        child_cut              = torch.where(child_valid.view(-1,1), child_cut,              parent_cut)
+        child_activation_layer = torch.where(child_valid,            child_activation_layer, parent_activation_layer)
+
+        return {"cell_id":          child_cell_id, 
+                "xyz":              child_cell_xyz, 
+                "feature":          child_cell_feature, 
+                "cut":              child_cut, 
+                "activation_layer": child_activation_layer}
+
+    def search_extend(self, xyz):
+        cells = self.search_layer_i(xyz, cells, max_layer_num))
+        return cells
+
+    def remove_last_sampled(self):
+        # TODO
+        pass
+
+    def merge_extend(self, merged_cell_count):
+        with torch.inference_mode():
+            is_leaf_cell = self.is_leaf_cell().view(-1,1).expand(-1,6)
+            def merge_to_parent_importance(main, mirror):
+                # TODO: define how different importance values stored for the same edge are combined
+                pass
+            self.synchronize_cell2edge(self.importance, merge_to_parent_importance)
+
+            valid_edge_importance = self.importance*is_leaf_cell
+            _, edge_chosen_index_1d = torch.sort(valid_edge_importance.view(-1))
+            edge_chosen_id_1d = edge_chosen_id_1d[:merged_cell_count]
+            edge_chosen = torch.zeros(self.max_cell_count, 6, dtype=torch.bool)
+            torch.scatter_(edge_chosen.view(-1), 0, edge_chosen_index_1d, torch.ones_like(edge_chosen_index_1d, dtype=torch.bool))
+
+            def choose_edge_with_highest_importance(edge_valid, cell_edge_num, cell_chosen):
+                # TODO: choose the highest importance from all valid edges
+                pass
+
+            edge_valid_for_original = self.broadcast_n_remove_conflict(edge_chosen, is_leaf_cell, choose_edge_with_highest_importance)
+
+            self.apply_sampled(edge_valid_for_original)
+
+            #! start setting structural variables
+            child_start = self.cell_offset[-1]
+            child_end = self.cell_offset[-1] + self.extend_cell_offset[-1]
+            parent_cell_index = self.parent_index[child_start:child_end]
+            parent_child_cut = self.child_cut[parent_cell_index, :]
+            parent_neighbor = self.neighbor[:, parent_cell_index, :]
+
+            child_index_relative = torch.arange(child_end - child_start, dtype=torch.int32, device=self.cell_offset.device)
+            child_01 = child_index_relative % 2
+            child_index = child_index_relative + child_start
+            abandoned_vertex = torch.gather(parent_child_cut, 1, (1-child_01).view(-1,1))
+            maintained_vertex = torch.gather(parent_child_cut, 1, child_01.view(-1,1))
+            # **set child neighbor
+            child_neighbor = parent_neighbor.clone()
+
+            # if the old neighbor has children, set new neighbor to be the children of the old neighbors
+            neighbor_cell_id = child_neighbor[0,:,:]
+            neighbor_has_child = (self.child_index[neighbor_cell_id, 0] != -1)
+            neighbor_child_cut_0 = self.child_cut[neighbor_cell_id, 0]
+            neighbor_child_0_isnewneighbor = (child_neighbor[1,:,:] != neighbor_child_cut_0)
+            neighbor_child_id = (~neighbor_child_0_isnewneighbor).int()
+            substitute_neighbor_id = self.child_index[neighbor_cell_id, neighbor_child_id]
+            child_neighbor[0,:,:] = torch.where(neighbor_has_child, substitute_neighbor_id, child_neighbor[0,:,:])
+
+            # one neighbor of a child cell is set to be the alternative child cell
+            abandoned_face = maintained_vertex.view(-1,1)
+            substitute_face_cellnum = (child_index_relative//2*2+1-child_01+child_start).view(-1,1)
+            substitute_face_facenum = abandoned_vertex.view(-1,1)
+            child_neighbor[0,:,:].scatter_(1, abandoned_face, substitute_face_cellnum)
+            child_neighbor[1,:,:].scatter_(1, abandoned_face, substitute_face_facenum)
+            
+            # TODO: set self.sync_to_trigger and self.sync_to
+            parent_sync_to = self.sync_to[:, parent_cell_index, :]
+            parent_sync_to_trigger = self.sync_to_trigger[parent_cell_index, :]
+
+            child_sync_to = torch.stack((parent_cell_index.view(-1,1).expand(-1,6), \
+                        torch.arange(6, device=parent_cell_index.device).view(1,6).expand(child_end-child_start, 6)), axis=0)
+            # get special edge which concides with child_cut
+            # get special edges connecting `abandoned_vertex` and two uninfluenced vertices
+            # TODO: temporarily only set the values of the activation layers
+
+    def sample_extend(self, sample_value_weight, sample_threshold):
+        with torch.inference_mode():
+            cell_num = self.cell_offset[-1]
+            is_leaf_cell = self.is_leaf_cell()
+            # the following variables are only valid for condition `is_leaf_cell`, that is, only leaf of the tree can choose edges.
+            edge_valid = torch.ones(self.max_cell_count, 6)
+            cell_edge_num = 6*torch.ones_like(self.activation_layer)
+            i = torch.tensor(0, dtype=torch.int32, device=self.activation_layer.device)
+            while True:
+                sample_rate = 1/(20-i)
+                if i < 19:
+                    i += 1
+                # **Choose some cells, choose one edge for each of them. then, if an edge is at the same time labeled `chosen` and `not chosen`, choose it.
+                sample_value = (cell_edge_num-1)/5 * torch.rand(cell_num, device=edge_valid.device)
+                cell_chosen_coarse = torch.logical_and(torch.logical_and(sample_value < sample_rate, \
+                                                                         cell_edge_num != 0), \
+                                                                         is_leaf_cell)
+                _, edge_chosen = self.choose_edge(edge_valid, cell_edge_num, cell_chosen_coarse)
+                self.synchronize_cell2edge(edge_chosen, torch.logical_or)
+                edge_valid = self.broadcast_n_remove_conflict(edge_chosen, is_leaf_cell, self.choose_edge)
+
+                cell_edge_num = torch.sum(edge_valid, axis=1)
+                if torch.all(torch.logical_or(cell_edge_num <= 1, 1-is_leaf_cell)):
+                    break
+        
+        return edge_valid
+
+    def apply_sampled(self, edge_valid):
+        with torch.inference_mode():
+            extend_offset = self.cell_offset[-1]
+            is_leaf_cell = self.is_leaf_cell().view(-1,1).expand(-1,6)
+            edge_valid_leaf = torch.logical_and(is_leaf_cell, edge_valid)
+            # **each edge which is valid for subdivision corresponds to a point in the extend layer, we need to get each edge an index(the same edges in different cells correspond to the same point index).
+            # set each unique edge a number and remove the conflicts
+            trace_edge = torch.arange(6*self.cell_count, device=edge_valid.device).view(self.cell_count, 6) + 1
+            self.synchronize_cell2edge(trace_edge, torch.max)
+            # each valid leaf cell contains an edge for subdivision, convert the edge number to the point index causing the subdivision
+            trace_edge_in_cell = torch.sum(edge_valid*trace_edge, axis=1)
+            sorted_trace_edge_in_cell, sort_index = torch.sort(trace_edge_in_cell, descending=False)
+            step_posi = sorted_trace_edge_in_cell[:-1] - sorted_trace_edge_in_cell[1:]
+            head = torch.tensor([0], dtype=torch.int32, device=step_posi.device)
+            sorted_trace_edge_in_cell_normalized = torch.concatenate((head, torch.cumsum(step_posi != 0, dim=0)))
+            # get "which cell index is divided by which point index & which point can be represented by which cell"
+            parent_cell_num = torch.sum(edge_valid_leaf)
+            parent_cell_index = sort_index[:parent_cell_num]
+            subdivision_point_index = sorted_trace_edge_in_cell_normalized[:parent_cell_num] + self.point_offset[-1]
+
+            one_cell_per_point_mid_index = torch.nonzero(step_posi).view(-1)
+            one_cell_per_point = sort_index[one_cell_per_point_mid_index]
+
+            # **connect parent and children
+            parent_child_index = torch.arange(2*parent_cell_num, device=edge_valid.device).view(-1,2) + self.cell_offset[-1]
+
+            parent_edge_index = torch.argmax(edge_valid[parent_cell_index, :], axis=1)
+            parent_child_cut = self.edge2point[parent_edge_index, :]
+
+            self.child_index[parent_cell_index, :] = parent_child_index
+            self.child_cut[parent_cell_index, :] = parent_child_cut
+            self.activation_layer[parent_cell_index] = self.max_layer_num
+
+            # **construct children cells
+            children_parent_index = parent_cell_index.view(-1,1).expand(-1,2)
+
+            abandoned_vertex = torch.stack((parent_child_cut[:,1], parent_child_cut[:,0]), axis=1).view(-1,2,1)
+            parent_point_index = self.point_index[parent_cell_index, :]
+            children_point_index = parent_point_index.view(-1,1,4).expand(-1,2,4) \
+                                .scatter(2, abandoned_vertex, subdivision_point_index.view(-1,1).expand(-1,2))
+
+            child_start = self.cell_offset[-1]
+            child_end = self.cell_offset[-1] + 2*parent_cell_num
+            self.parent_index[child_start:child_end] = children_parent_index.view(-1)
+            self.point_index[child_start:child_end, :] = child_point_index.view(-1,4)
+            self.child_index[child_start:child_end, :] = -1
+            self.child_cut[child_start:child_end, :] = -1
+            self.activation_layer[child_start:child_end] = -1
+            self.layer[child_start:child_end] = self.max_layer_num
+            # TODO: MAX_SYNC_TO_TRIGGER not defined
+            self.sync_to_trigger[child_start:child_end] = MAX_SYNC_TO_TRIGGER
+            self.sync_to[:, child_start:child_end, :] = -1
+
+            # **construct children points
+            divided_point_index_in_cell = parent_child_cut[one_cell_per_point_mid_index, :]
+            divided_point_index = torch.gather(parent_point_index, 1, divided_point_index_in_cell)
+            child_field = torch.sum(self.field[divided_point_index, :], axis=1) / 2
+            child_xyz = torch.sum(self.xyz[divided_point_index, :], axis=1) / 2
+
+            point_start = self.point_offset[-1]
+            point_end = self.point_offset[-1] + one_cell_per_point_mid_index.shape[0]
+            self.field[point_start:point_end, :] = child_field
+            self.xyz[point_start:point_end, :] = child_xyz
+
+            # **change overall extend label
+            self.extend_cell_offset[-1] = child_end - child_start
+            self.extend_point_offset[-1] = point_end - point_start
+
+    # ! second level detailed function definition starts here
+    def get_tetra_xyz(self, aabb):
+        #TODO: get the tetrahedron cover of `aabb`, only xyz values, so shape (4,3)
+        pass
+
+    def is_leaf_cell(self):
+        # TODO: mistaken `is_leaf_cell` condition, self.activation_layer should be larger than self.max_layer_num? to exclude extend layer. (but it might exclude original leaf cell with no extend child, we may need to fix this)
+        return torch.logical_or(self.activation_layer>=self.max_layer_num, self.activation_layer==-1)
+
+    def set_layer_cell_size(self, layer_i, size, mode):
+        if mode == "original":
+            orig_size = self.cell_offset[layer_i+1] - self.cell_offset[layer_i]
+            self.cell_offset[layer_i+1:] += (size - orig_size)
+        elif mode == "extend":
+            #? this is not needed, remove it later
+            orig_size = self.extend_cell_offset[layer_i+1] - self.extend_cell_offset[layer_i]
+            self.extend_cell_offset[layer_i+1:] += (size - orig_size)
+        else:
+            import sys
+            sys.exit("there should be no other modes!")
+        
+    def set_layer_point_size(self, layer_i, size, mode):
+        if mode == "original":
+            orig_size = self.point_offset[layer_i+1] - self.point_offset[layer_i]
+            self.point_offset[layer_i+1:] += (size - orig_size)
+        elif mode == "extend":
+            orig_size = self.extend_point_offset[layer_i+1] - self.extend_point_offset[layer_i]
+            self.extend_point_offset[layer_i+1:] += (size - orig_size)
+        else:
+            import sys
+            sys.exit("there should be no other modes!")
+
+    def choose_edge(edge_valid, cell_edge_num, cell_chosen):
+        cell_num = edge_valid.shape[0]
+        edge_chosen_index_in_valid = ( torch.rand(cell_num) * cell_edge_num ).int() + 1
+        confirmed = torch.zeros(cell_num, dtype=torch.bool, device=edge_valid.device)
+        edge_chosen_index = torch.zeros(cell_num, dtype=torch.int8, device=edge_valid.device)
+        edge_chosen = torch.zeros(cell_num, 6, dtype=torch.bool, device=edge_valid.device)
+        valid_edge_count_prefix = torch.cumsum(edge_valid, dim=1)
+        for i in range(6):
+            chosen_condition = torch.logical_and(valid_edge_count_prefix[:,i]==edge_chosen_index_in_valid, 1-confirmed)
+            confirmed = torch.logical_or(chosen_condition, confirmed)
+            edge_chosen_index = torch.where(chosen_condition, i, edge_chosen_index)
+
+        edge_chosen = torch.scatter(edge_chosen, 1, edge_chosen_index.view(-1,1), cell_chosen)
+        return edge_chosen_index, edge_chosen
+
+    def broadcast_n_remove_conflict(edge_chosen, is_leaf_cell, choose_edge_func):
+        # **conflictions may happen in the following scenario: a and b choose two different common edges with c. To fix this, choose only one edge in each conflicting cell and invalidate others. if an edge is at the same time labeled `invalid` and `not invalid`, invalidate it.
+        # note, cells with only one valid edge never get invalidated, because all conflicting edges have been invalidated by the next step in the last round, and will not be chosen this round
+        cell_chosen_edge_num = torch.sum(edge_chosen, axis=1)
+        cell_related = torch.logical_and(cell_chosen_edge_num != 0, is_leaf_cell)
+        edge_chosen_index, edge_chosen = choose_edge_func(edge_chosen, cell_chosen_edge_num, cell_related)
+        self.synchronize_cell2edge(edge_chosen, torch.logical_and)
+                
+        cell_chosen = (torch.sum(edge_chosen, axis=1) == 1)
+        # **In each cell, if an edge is chosen, all other edges are invalidated. if an edge is at the same time labeled `invalid` and `not invalid`, invalidate it.
+        edge_valid = (1-cell_chosen).view(-1,1).expand(-1,6)
+        torch.scatter_(edge_valid, 1, edge_chosen_index, torch.ones_like(cell_chosen))
+        self.synchronize_cell2edge(edge_valid, torch.logical_and)
+
+        return edge_valid
+
+    def synchronize_cell2edge(sync_src, reduction_func):
+        # synchronize the value of each edge,  because they(`sync_src`) are stored and updated at the structure of cells. do reduction along the tree to a partial root, and then spread the reduction results back to the leaves
+        sync_buffer = torch.zeros_like(sync_src)
+        sync_label = torch.zeros_like(sync_src)
+        sync_label_true = torch.ones_like(sync_src)
+
+        self.sort_for_syncing()
+        # TODO: self.sync_to_trigger, self.sync_to, maximum is not defined
+        #? sync_src.copy_ give a costly implementation, change it into a cheaper one if necessary
+        for trigger in range(maximum-1, 0, -1):
+            is_syncing_to_cellnum, is_syncing_to_edgenum = self.get_sync_trigger_index(trigger)
+            self.write_src_to_dst(sync_src, sync_buffer, self.sync_to, is_syncing_to_cellnum, is_syncing_to_edge_num)
+            self.write_src_to_dst(sync_label_true, sync_label, self.sync_to, is_syncing_to)
+            update_value = reduction_func(sync_src, sync_buffer)
+            sync_src.copy_(torch.where( sync_label, update_value, sync_src ))
+            sync_label[:] = 0
+        
+        for trigger in range(1, maximum, 1):
+            is_syncing_from_cellnum, is_syncing_from_edgenum = self.get_sync_trigger_index(trigger)
+            self.read_dst_to_src(sync_src, sync_buffer, self.sync_to, is_syncing_from_cellnum, is_syncing_from_edgenum)
+            self.read_dst_to_src(sync_label_true, sync_label, self.sync_to, is_syncing_from_cellnum, is_syncing_from_edgenum)
+            sync_src.copy_(torch.where( sync_label, sync_buffer, sync_src ))
+            sync_label[:] = 0
+
+    # ! third level detailed function definition starts here
+    def sort_for_syncing():
+        #? still lack checking for invalid slots, that is, for `index >= self.max_cell_count`, we still have to manually set their `sync_to_trigger` values to a preset large constant value.
+        #? memorize to change self.syncing_sort to False after subdivision
+        if not self.syncing_sorted:
+            sorted_sync_to_trigger, sort_sync_to_trigger_index_1d = torch.sort(self.sync_to_trigger.view(-1))
+            self.sort_sync_to_trigger_cellnum = sort_sync_to_trigger_index_1d // 6
+            self.sort_sync_to_trigger_edgenum = sort_sync_to_trigger_index_1d %  6
+            step_posi = sorted_sync_to_trigger[1:] - sort_sync_to_trigger[:-1]
+            head = torch.tensor([0], dtype=torch.int32, device=step_posi.device)
+            self.sorted_trigger_offset = torch.concatenate((head, 1+torch.nonzero(step_posi).view(-1)))
+            self.syncing_sorted[0] = True
+
+    def get_sync_trigger_index(trigger):
+        sorted_start_index = self.sorted_trigger_offset[trigger]
+        sorted_end_index = self.sorted_trigger_offset[trigger+1]
+        return self.sync_to_trigger_cellnum[sorted_start_index: sorted_end_index], \
+               self.sync_to_trigger_edgenum[sorted_start_index: sorted_end_index]
+
+    def write_src_to_dst(src, dst, src_to_dst, src_index_cellnum, src_index_edgenum):
+        #? this is a waste, because it is just calculated in the above function `sort_for_syncing`
+        src_index_1d = 6*src_index_cellnum + src_index_edgenum
+        value = torch.gather(src.view(-1), 0, src_index_1d)
+        dst_index_cell = torch.gather(src_to_dst[0,:,:].view(-1), 0, src_index_1d)
+        dst_index_edge = torch.gather(src_to_dst[1,:,:].view(-1), 0, src_index_1d)
+        dst_index_1d = 6*dst_index_cell + dst_index_edge
+        dst.view(-1).scatter_(0, dst_index_1d, value)
+
+    def read_dst_to_src(src, dst, src_to_dst, src_index_cellnum, src_index_edgenum):
+        #? this is a waste, because it is just calculated in the above function `sort_for_syncing`
+        src_index_1d = 6*src_index_cellnum + src_index_edgenum
+        dst_index_cell = torch.gather(src_to_dst[0,:,:].view(-1), 0, src_index_1d)
+        dst_index_edge = torch.gather(src_to_dst[1,:,:].view(-1), 0, src_index_1d)
+        dst_index_1d = 6*dst_index_cell + dst_index_edge
+        value = torch.gather(src.view(-1), 0, dst_index_1d)
+        dst.view(-1).scatter_(0, src_index_1d, value)
 
 # pylint: disable=attribute-defined-outside-init
 class FlexNerfField(Field):
@@ -305,7 +582,6 @@ class FlexNerfField(Field):
     ) -> None:
         super().__init__()
         self.register_buffer("aabb", aabb)
-        self.grid_resolution = torch.tensor([min_resolution, min_resolution, min_resolution])
         self.feature_dim = feature_dim
 
         self.geo_feat_dim = geo_feat_dim
@@ -316,7 +592,7 @@ class FlexNerfField(Field):
             implementation=implementation,
         )
 
-        self.multi_layer_tetra = MultiLayerTetra(aabb, feature_dim, self.grid_resolution, max_layer_num, max_point_per_layer)
+        self.multi_layer_tetra = MultiLayerTetra(aabb, feature_dim, max_layer_num, max_point_per_layer)
 
         self.mlp_base_mlp = MLP(
             in_dim=self.feature_dim,
