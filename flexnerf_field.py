@@ -20,6 +20,9 @@ from nerfstudio.field_components.mlp import MLP
 from nerfstudio.field_components.spatial_distortions import SpatialDistortion
 from nerfstudio.fields.base_field import Field, get_normalized_directions
 
+DEBUG_FLAG = 0
+DEBUG_FLAG_INNER = 0
+
 def to_canonical(xyz, cell_xyz):
     xyz: Tensor[sample_num, 3]
     cell_xyz: Tensor[sample_num, 4, 3]
@@ -110,7 +113,7 @@ class MultiLayerTetra(nn.Module):
         )
         self.register_buffer(
             "point_index",
-            torch.zeros((self.max_cell_count, 4), dtype=torch.int64)
+            -torch.ones((self.max_cell_count, 4), dtype=torch.int64)
         )
         ## child_cut is the way it is sliced into current cell(1 of 6 edges, or 2 of 4 vertices)
         self.register_buffer(
@@ -122,10 +125,10 @@ class MultiLayerTetra(nn.Module):
             "parent_index",
             torch.zeros((self.max_cell_count), dtype=torch.int64)
         )
-        ## note: this is the importance of each subdivision candidate. If you want to get the importance of a cell subdivision, one way is to set the importance to be the edge of parent cell's cut (perhaps compare to that without the subdivision afterwards).
+        ## note: this is the importance of each subdivision candidate. If you want to get the importance of a cell subdivision, one way is to set the importance to be the edge of parent cell's cut (perhaps compare to that without the subdivision afterwards). It is necessary to set this to random small values! or else merge_extend will fail to distinguish which edges are leaf edges which need to be sampled on.
         self.register_buffer(
             "importance",
-            torch.zeros((self.max_cell_count, 6), dtype=torch.float32)
+            torch.empty((self.max_cell_count, 6), dtype=torch.float32).uniform_(0.0005,0.001)
         )
         ## activation_layer stands for the layer where child cell is stored. That is, cells may have a cross-multi-layer parent-child relationship. 
         ## note: A cell is only activated when seach_layer_i(i == activation_layer)
@@ -186,6 +189,16 @@ class MultiLayerTetra(nn.Module):
             cells = self.search_extend(xyz, cells)
         feature = interpolate_field_value(xyz, cells)
         return feature
+
+    def update_importance(self, related_cell_index, importance_value):
+        '''
+        a bunch of cells at `related_cell_index` are affected by a training process, and they need to update their importance values. An affected cell is a leaf cell, the importance_value stands for the difference between the cell itself and the subcells created by `sample_extend`. The value will be applied on the cut edge of the cell(self.child_cut).
+
+        #? the related_cell_index may contain repeatative cells, or cells that are not sampled(with self.child_cut[?] = -1). For the 1st, reduce them to one value; for the 2nd, discard them.
+
+        related_cell_index: Tensor[cell_num]
+        importance_value: Tensor[cell_num]
+        '''
 
     # ! detailed function definition starts here
     def organize_layer_0(self):
@@ -302,20 +315,22 @@ class MultiLayerTetra(nn.Module):
     @torch.inference_mode()
     def merge_extend(self, merged_cell_count):
         is_leaf_cell = self.is_leaf_cell()
-        #? use a more elegant function for importance synchronization, rather than "average"
-        self.importance.copy_(self.synchronize_cell2edge(self.importance, "average"))
-
+        #? use a more elegant function for importance synchronization, rather than "max"
+        leaf_edge_importance = self.importance*is_leaf_cell.view(-1,1)
+        valid_edge_importance = self.synchronize_cell2edge(leaf_edge_importance, "max")
+        valid_edge_importance = torch.where(torch.isnan(valid_edge_importance), -1, valid_edge_importance) \
+                                    * is_leaf_cell.view(-1,1)
         #? number of chosen edges is fixed to be merged_cell_count, but each cell may at most include 6 chosen edges, so the number of actual chosen cell falls far below merged_cell_count.
-        valid_edge_importance = self.importance*is_leaf_cell.view(-1,1)
-        #? valid_edge_importance will not show validity if self.importance=0 for valid points. We thus use `stable=True` here to temporarily avoid this mess. another way might be to use different importance values, this might be cheaper and more robust.
-        sorted_valid_edge_importance, edge_candidate_index_1d = torch.sort(valid_edge_importance.view(-1), stable=True)
+        sorted_valid_edge_importance, edge_candidate_index_1d = torch.sort(valid_edge_importance.view(-1), descending=True)
         edge_candidate_index_1d = edge_candidate_index_1d[:merged_cell_count]
         edge_candidate = torch.zeros(self.max_cell_count, 6, dtype=torch.bool)
         edge_candidate.view(-1).scatter_(0, edge_candidate_index_1d, torch.ones_like(edge_candidate_index_1d, dtype=torch.bool))
-
         cell_candidate = (torch.sum(edge_candidate, axis=1) != 0)
         # the following line is only to remove the edge candidate with the least importance, which may create more subcells than expected
+        edge_candidate = torch.logical_or(edge_candidate, ~is_leaf_cell.view(-1,1))
         edge_candidate = self.synchronize_cell2edge(edge_candidate, "and")
+        edge_candidate = torch.logical_and(edge_candidate, is_leaf_cell.view(-1,1))
+        edge_candidate = self.synchronize_cell2edge(edge_candidate, "or")
         edge_determined = torch.zeros_like(edge_candidate)
         iteration = 0
         while True:
@@ -342,9 +357,11 @@ class MultiLayerTetra(nn.Module):
             #** make sure no conflict exists
             edge_valid_temp = self.broadcast_n_remove_conflict(chosen_edge_stage2, is_leaf_cell)
             edge_candidate = torch.logical_and(edge_valid_temp, edge_candidate)
-            edge_determined = torch.logical_and(edge_valid_temp, chosen_edge_stage2)
 
-            candidate_edge_num = torch.sum(edge_candidate, axis=1)
+            candidate_edge_num = torch.sum(edge_candidate, axis=1) * is_leaf_cell
+
+            edge_determined = torch.where(candidate_edge_num.view(-1,1).expand(-1,6) == 1, edge_candidate, edge_determined)
+
             if torch.all(candidate_edge_num <= 1):
                 break
         # note, return of broadcast_n_remove_conflict only determines the `invalid`s, so only cells with a fixed chosen edge should be taken into account
@@ -354,6 +371,7 @@ class MultiLayerTetra(nn.Module):
         edge_valid_for_original_idincell = torch.argmax(edge_valid_for_original.int(), axis=1)
 
         self.apply_sampled(edge_valid_for_original)
+        print("an additional ", self.extend_cell_offset[0], " cells will be added.")
 
         #! start setting structural variables
         child_start = self.cell_offset[0]
@@ -532,7 +550,9 @@ class MultiLayerTetra(nn.Module):
         cell_chosen_edge_num = torch.sum(edge_chosen, axis=1)
         cell_related = torch.logical_and(cell_chosen_edge_num != 0, is_leaf_cell)
         edge_chosen_index, edge_chosen = self.choose_edge(edge_chosen, cell_chosen_edge_num, cell_related)
+        edge_chosen = torch.logical_or(edge_chosen, ~is_leaf_cell.view(-1,1))
         edge_chosen = self.synchronize_cell2edge(edge_chosen, "and")
+        edge_chosen = torch.logical_and(edge_chosen, is_leaf_cell.view(-1,1))
                 
         cell_chosen = (torch.sum(edge_chosen, axis=1) == 1)
         # **In each cell, if an edge is chosen, all other edges are invalidated. if an edge is at the same time labeled `invalid` and `not invalid`, invalidate it.
@@ -547,15 +567,13 @@ class MultiLayerTetra(nn.Module):
         synchronize the value of each edge,  because they(`sync_src`) are stored and updated at the structure of cells. do reduction along the tree to a partial root, and then spread the reduction results back to the leaves
         '''
         # most reduction_func can be implemented as a special case of "sum", except "max". we implement it as below.
-        #? the following line might be deleted when integrated
-        sync_src = sync_src.int()
         if reduction_func == "max":
             buffer = torch.zeros_like(sync_src)
             
             max_cell2sortededge_map_inner = torch.argsort(sync_src.view(-1), descending=True)
             sorted_edge_index_inner = self.edge_index.view(-1)[max_cell2sortededge_map_inner]
-            sorted_edge_index, max_cell2sortededge_map_outter = torch.sort(sorted_edge_index_inner, stable=True)
-            max_cell2sortededge_map = max_cell2sortededge_map_outter[max_cell2sortededge_map_inner]
+            sorted_edge_index, max_cell2sortededge_map_outter = torch.sort(sorted_edge_index_inner, stable=True, descending=True)
+            max_cell2sortededge_map = max_cell2sortededge_map_inner[max_cell2sortededge_map_outter]
             sync_src_indexsort = sync_src.view(-1)[max_cell2sortededge_map]
 
             sorted_edge_changing = (sorted_edge_index[1:]-sorted_edge_index[:-1] != 0)
@@ -565,9 +583,12 @@ class MultiLayerTetra(nn.Module):
             sorted_max_edge = leading_edge[leadedby_edge]
             sorted_max_sync_src = sync_src_indexsort[sorted_max_edge]
 
-            torch.scatter(buffer.view(-1), 0, max_cell2sortededge_map, sorted_max_sync_src)
+            buffer.view(-1).scatter_(0, max_cell2sortededge_map, sorted_max_sync_src)
             return buffer
 
+        #? the following line might be deleted when integrated
+        if reduction_func != "average" and reduction_func != "sum":
+            sync_src = sync_src.int()
         self.sort_for_edge()
         sync_src_indexsort = sync_src.view(-1)[self.cell2sortededge_map]
         head = torch.zeros([1], dtype=sync_src_indexsort.dtype, device=sync_src_indexsort.device)
@@ -586,7 +607,7 @@ class MultiLayerTetra(nn.Module):
             groupby_result = groupby_sum / groupby_count
         elif reduction_func == "unique":
             #? a waste to generate groupby_sum
-            groupby_result = torch.arange(groupby_sum.shape[0], device=groupby_sum.device)
+            groupby_result = torch.arange(groupby_sum.shape[0], device=groupby_sum.device) + 1
         elif reduction_func == "broadcast":
             groupby_result = sync_src_indexsort[self.sorted_edge_offset[:-1]]
         else:
@@ -608,7 +629,6 @@ class MultiLayerTetra(nn.Module):
         ret_cellindex_unselected: Tensor[parent_cell_count, 2] # range from 2 to edge_end-edge_start+2
         ret_cellindex_selected: Tensor[parent_cell_count, 2] # range from 0 to 1
         '''
-
         selected_point_idincell = self.selected_point_idincell_from_edge(selected_edge_idincell)
         unselected_point_idincell = self.unselected_point_idincell_from_edge(selected_edge_idincell)
 
@@ -622,7 +642,7 @@ class MultiLayerTetra(nn.Module):
         selected_edge_index_expand_innersort = selected_edge_index_expand.view(-1)[inner_sorting_indices]
         outer_sorting_indices = torch.argsort(selected_edge_index_expand_innersort, stable=True)
 
-        twolevel_sorting_indices = outer_sorting_indices[inner_sorting_indices]
+        twolevel_sorting_indices = inner_sorting_indices[outer_sorting_indices]
         twolevel_sorted_edge = selected_edge_index_expand.view(-1)[twolevel_sorting_indices]
         twolevel_sorted_unselected_point = unselected_point_index.view(-1)[twolevel_sorting_indices]
 
@@ -635,10 +655,11 @@ class MultiLayerTetra(nn.Module):
         reindex_nohead = torch.cumsum(twolevel_sorted_changing, dim=0)
         head = torch.tensor([0], dtype=reindex_nohead.dtype, device=reindex_nohead.device)
         reindex = torch.concatenate((head, reindex_nohead), axis=0)
-        
+
         leading_subedge = torch.concatenate((head, 1+torch.nonzero(twolevel_sorted_edge_changing).view(-1)), axis=0)
         leadedby_subedge = torch.concatenate((head, torch.cumsum(twolevel_sorted_edge_changing, dim=0)), axis=0)
-        twolevel_sorted_offset = leading_subedge[leadedby_subedge]
+        leadedby_subedge_sorted_indices = leading_subedge[leadedby_subedge]
+        twolevel_sorted_offset = reindex[leadedby_subedge_sorted_indices]
         twolevel_sorted_cellindex = reindex - twolevel_sorted_offset
 
         ## note, each divided edge in the parent cell creates 2+N new edges, where N is the number of adjacent points of the edge. thus the i+1'th edge should be offset 2*i+\sigma{N}
@@ -652,12 +673,13 @@ class MultiLayerTetra(nn.Module):
 
         # set offset and cellindex for new subedges divided from one edge of the parent cell
         twolevel_sorted_selected_point = selected_point_index.view(-1)[twolevel_sorting_indices]
-        leading_subedge_point_index = twolevel_sorted_selected_point[leading_subedge]
+        leading_subedge_point_index = twolevel_sorted_selected_point[leadedby_subedge_sorted_indices]
         twolevel_sorted_issubedge = (leading_subedge_point_index != twolevel_sorted_selected_point)
         ret_cellindex_selected = torch.scatter(selected_point_index.view(-1), 0, \
                                     twolevel_sorting_indices, twolevel_sorted_issubedge.long()).view(-1,2)
 
         full_subedge_count = 1+torch.sum(twolevel_sorted_changing)
+        full_subedge_count += 2*leadedby_subedge[-1] + 2
 
         # ret_cellindex_unselected is for subedge: division point A & unselected_point_idincell
         # ret_cellindex_selected is for subedge: division point A & selected_point_idincell
