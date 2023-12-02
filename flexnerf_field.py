@@ -29,8 +29,10 @@ def to_canonical(xyz, cell_xyz):
     canonical: Tensor[sample_num, 4]
 
     # [a, b, c, d] @ convert_matrix = [x, y, z, 1]
-    convert_matrix = torch.transpose( torch.concatenate(cell_xyz, torch.ones_like(xyz).view(-1,3,1), axis=-1), 1,2)
-    convert_xyz = torch.concatenate(xyz, torch.ones_like(xyz[:,:1]), axis=-1)
+    sample_num = cell_xyz.shape[0]
+    cell_xyz_tail = torch.ones(sample_num, 4, 1, dtype=cell_xyz.dtype, device=cell_xyz.device)
+    convert_matrix = torch.transpose( torch.concatenate([cell_xyz, cell_xyz_tail], axis=-1), 1,2)
+    convert_xyz = torch.concatenate([xyz, torch.ones_like(xyz[:,:1])], axis=-1)
     canonical = torch.linalg.solve(convert_matrix, convert_xyz)
     return canonical
 
@@ -183,11 +185,11 @@ class MultiLayerTetra(nn.Module):
         self.apply_sampled(edge_valid)
 
     def forward(self, xyz, use_extend=True):
-        cells = self.search_field_0(xyz)
+        cells = self.search_layer_0(xyz)
         for i in range(1, self.max_layer_num-1):
             cells = self.search_layer_i(xyz, cells, i)
         cell_id = cells["cell_id"]
-        importance = torch.max(self.importance[cell_id, :], axis=-1)
+        importance = torch.max(self.importance[cell_id, :], axis=-1).values
         feature = interpolate_field_value(xyz, cells)
         if not use_extend:
             return feature, None, cell_id, importance
@@ -270,7 +272,7 @@ class MultiLayerTetra(nn.Module):
                 "activation_layer": activation_layer}
 
     def search_layer_i(self, xyz, parent_cells, i):
-        sample_size = xyz.shape[0]
+        sample_num = xyz.shape[0]
 
         parent_id = parent_cells["cell_id"]
         parent_xyz = parent_cells["xyz"]
@@ -287,7 +289,8 @@ class MultiLayerTetra(nn.Module):
         # **child_vertex_id, mid variable, now represented as abandoned_vertex & child_vertex_id_substitute
         # only one vertex of the parent cell will change when divided into a subcell
         ## element of abandoned_vertex is in 0,1,2,3
-        abandoned_vertex = torch.gather(parent_cut, 1, 1-children_choice.view(-1,1))
+        abandoned_vertex = torch.gather(parent_cut, 1, 1-children_choice.view(-1,1)).view(-1)
+
         child_vertices_id_substitute = self.point_index[child_cell_id, abandoned_vertex]
         # **child_feature
         #? no longer needed, remove it later
@@ -296,7 +299,7 @@ class MultiLayerTetra(nn.Module):
         child_feature[torch.arange(sample_num), abandoned_vertex, :] = child_feature_substitute
         # **child_xyz
         child_xyz = parent_xyz.clone()
-        cut_point_xyz = parent_xyz[torch.arange(sample_num).view(-1,1), cell_cut, :]
+        cut_point_xyz = parent_xyz[torch.arange(sample_num).view(-1,1), parent_cut, :]
         child_xyz_substitute = torch.sum(cut_point_xyz, axis=1) / 2
         child_xyz[torch.arange(sample_num), abandoned_vertex, :] = child_xyz_substitute
         # **child_cut
@@ -305,19 +308,19 @@ class MultiLayerTetra(nn.Module):
         child_activation_layer = self.activation_layer[child_cell_id]
 
         # filter out inactivated cells
-        child_cell_id          = torch.where(child_valid,            child_cell_id,          parent_id)
-        child_feature          = torch.where(child_valid.view(-1,1), child_feature,          parent_feature)
-        child_xyz              = torch.where(child_valid.view(-1,1), child_xyz,              parent_xyz)
-        child_cut              = torch.where(child_valid.view(-1,1), child_cut,              parent_cut)
-        child_activation_layer = torch.where(child_valid,            child_activation_layer, parent_activation_layer)
+        child_cell_id          = torch.where(child_valid,              child_cell_id,          parent_id)
+        child_feature          = torch.where(child_valid.view(-1,1,1), child_feature,          parent_feature)
+        child_xyz              = torch.where(child_valid.view(-1,1,1), child_xyz,              parent_xyz)
+        child_cut              = torch.where(child_valid.view(-1,1),   child_cut,              parent_cut)
+        child_activation_layer = torch.where(child_valid,              child_activation_layer, parent_activation_layer)
 
         return {"cell_id":          child_cell_id, 
-                "xyz":              child_cell_xyz, 
-                "feature":          child_cell_feature, 
+                "xyz":              child_xyz, 
+                "feature":          child_feature, 
                 "cut":              child_cut, 
                 "activation_layer": child_activation_layer}
 
-    def search_extend(self, xyz):
+    def search_extend(self, xyz, cells):
         cells = self.search_layer_i(xyz, cells, self.max_layer_num)
         return cells
 
@@ -862,6 +865,8 @@ class FlexNerfField(Field):
 
         density, density_embedding = feature2out(feature)
         extend_density, extend_density_embedding = feature2out(extend_feature)
+        cell_id = cell_id.view(*ray_samples.frustums.shape, -1)
+        importance = importance.view(*ray_samples.frustums.shape, -1)
         return density, density_embedding, extend_density, extend_density_embedding, cell_id, importance
 
     def get_outputs(

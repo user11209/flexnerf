@@ -291,7 +291,7 @@ class FlexNeRFModel(Model):
             def importance2density_n_rgb(importance):
                 density_raw = 100*importance
                 relative_importance = importance / torch.max(importance)
-                rgb_raw = torch.stack([(relative_importance+1)/2, (1-relative_importance)/2, (1-relative_importance)/2])
+                rgb_raw = torch.cat([(relative_importance+1)/2, (1-relative_importance)/2, (1-relative_importance)/2], axis=-1)
 
                 return density_raw, rgb_raw
             
@@ -337,23 +337,19 @@ class FlexNeRFModel(Model):
             gt_image=image,
         )
 
-        loss_dict["rgb_loss"] = self.rgb_loss(gt_rgb, pred_rgb)
+        extend_pred_rgb, extend_gt_rgb = self.renderer_rgb.blend_background_for_loss_computation(
+            pred_image=outputs["rgb_extend"],
+            pred_accumulation=outputs["accumulation"],
+            gt_image=image,
+        )
+
+        loss_dict["rgb_loss"] = self.rgb_loss(gt_rgb, pred_rgb) + 0.1*self.rgb_loss(extend_gt_rgb, extend_pred_rgb)
         if self.training:
             loss_dict["interlevel_loss"] = self.config.interlevel_loss_mult * interlevel_loss(
                 outputs["weights_list"], outputs["ray_samples_list"]
             )
             assert metrics_dict is not None and "distortion" in metrics_dict
-            loss_dict["distortion_loss"] = self.config.distortion_loss_mult * metrics_dict["distortion"]
-            if self.config.predict_normals:
-                # orientation loss for computed normals
-                loss_dict["orientation_loss"] = self.config.orientation_loss_mult * torch.mean(
-                    outputs["rendered_orientation_loss"]
-                )
-
-                # ground truth supervision for normals
-                loss_dict["pred_normal_loss"] = self.config.pred_normal_loss_mult * torch.mean(
-                    outputs["rendered_pred_normal_loss"]
-                )
+            loss_dict["distortion_loss"] = self.config.distortion_loss_mult * metrics_dict["distortion"]*0.005
         return loss_dict
 
     def get_image_metrics_and_images(
