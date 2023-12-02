@@ -173,6 +173,7 @@ class MultiLayerTetra(nn.Module):
         self.organize_layer_0()
         self.refine_samples(True)
 
+    @torch.inference_mode()
     def refine_samples(self, update_original):
         self.remove_last_sampled()
         # TODO: check boundaries, no to exceed the `max_??_count`, especially for sample_extend. Note, merge_extend lack 1 positional argument for that reason. temporarily set it to be 2. Note, this value means how many parent cells will be divided, so the actual increased cell number is at most twice the value
@@ -181,16 +182,23 @@ class MultiLayerTetra(nn.Module):
         edge_valid = self.sample_extend()
         self.apply_sampled(edge_valid)
 
-    def forward(self, xyz):
+    def forward(self, xyz, use_extend=True):
         cells = self.search_field_0(xyz)
         for i in range(1, self.max_layer_num-1):
             cells = self.search_layer_i(xyz, cells, i)
-        if self.mode == "extend":
-            cells = self.search_extend(xyz, cells)
+        cell_id = cells["cell_id"]
+        importance = torch.max(self.importance[cell_id, :], axis=-1)
         feature = interpolate_field_value(xyz, cells)
-        return feature
+        if not use_extend:
+            return feature, None, cell_id, importance
+        else:
+            cells = self.search_extend(xyz, cells)
+            extend_feature = interpolate_field_value(xyz, cells)
+            #? possibly not necessary to pass all the three values all the time?
+            return feature, extend_feature, cell_id, importance
 
-    def update_importance(self, related_cell_index, importance_value):
+    @torch.inference_mode()
+    def update_importance(self, related_cell_index, importance_value, update_rate=0.97):
         '''
         a bunch of cells at `related_cell_index` are affected by a training process, and they need to update their importance values. An affected cell is a leaf cell, the importance_value stands for the difference between the cell itself and the subcells created by `sample_extend`. The value will be applied on the cut edge of the cell(self.child_cut).
 
@@ -199,6 +207,38 @@ class MultiLayerTetra(nn.Module):
         related_cell_index: Tensor[cell_num]
         importance_value: Tensor[cell_num]
         '''
+        related_cell_index = related_cell_index.view(-1)
+        importance_value = importance_value.view(-1)
+        cell_count = related_cell_index.shape[0]
+
+        #* remove duplicates
+        sorted_related_cell_index, sorted_indices = torch.sort(related_cell_index)
+        sorted_importance_value = importance_value[sorted_related_cell_index]
+
+        cell_changing_nohead = (sorted_related_cell_index[1:] - sorted_related_cell_index[:-1] != 0).long()
+        head = torch.tensor([1], dtype=torch.int64, device=cell_changing_nohead.device)
+        cell_changing = torch.concatenate([head, cell_changing_nohead])
+
+        leading_cell = torch.concatenate([torch.nonzero(cell_changing).view(-1), cell_count*head])
+        float_head = torch.tensor([0], dtype=torch.float32, device=cell_changing_nohead.device)
+        sorted_importance_cumsum = torch.concatenate([float_head, torch.cumsum(importance_value, 0)])
+
+        groupby_sum = sorted_importance_cumsum[leading_cell[1:]] - sorted_importance_cumsum[leading_cell[:-1]]
+        groupby_count = leading_cell[1:] - leading_cell[:-1]
+        groupby_average = groupby_sum / groupby_count
+        groupby_cell_index = sorted_related_cell_index[leading_cell[:-1]]
+
+        #* check whether cells are sampled for extension (if not, `importance_value` will usually be 0 for these cells)
+        groupby_child_cut = self.child_cut[groupby_cell_index, :]
+        groupby_edge_idincell = self.edge_idincell_from_point(groupby_child_cut)
+        groupby_edge_valid = (groupby_edge_idincell != -1)
+
+        groupby_importance_last = self.importance[groupby_cell_index, groupby_edge_idincell]
+        groupby_importance_update = torch.where(groupby_edge_valid, groupby_average, grouby_importance_last)
+        groupby_importance_new = groupby_importance_last*update_rate + groupby_importance_update*(1-update_rate)
+
+        #* update the importance
+        self.importance[groupby_cell_index, groupby_edge_idincell] = groupby_importance_new
 
     # ! detailed function definition starts here
     def organize_layer_0(self):
@@ -768,3 +808,104 @@ class FlexNerfField(Field):
         )
 
         self.multi_layer_tetra = MultiLayerTetra(aabb, feature_dim, max_layer_num, 8*max_point_per_layer, max_point_per_layer)
+
+        self.mlp_base_mlp = MLP(
+            in_dim=feature_dim,
+            num_layers=num_layers,
+            layer_width=hidden_dim,
+            out_dim=1 + self.geo_feat_dim,
+            activation=nn.ReLU(),
+            out_activation=None,
+            implementation=implementation,
+        )
+
+        self.mlp_head = MLP(
+            in_dim=self.direction_encoding.get_out_dim() + self.geo_feat_dim,
+            num_layers=num_layers_color,
+            layer_width=hidden_dim_color,
+            out_dim=3,
+            activation=nn.ReLU(),
+            out_activation=nn.Sigmoid(),
+            implementation=implementation,
+        )
+
+    def get_density(self, ray_samples: RaySamples) -> Tuple[Tensor, Tensor]:
+        """Computes and returns the densities."""
+        if self.spatial_distortion is not None:
+            positions = ray_samples.frustums.get_positions()
+            positions = self.spatial_distortion(positions)
+            positions = (positions + 2.0) / 4.0
+        else:
+            positions = SceneBox.get_normalized_positions(ray_samples.frustums.get_positions(), self.aabb)
+        # Make sure the tcnn gets inputs between 0 and 1.
+        selector = ((positions > 0.0) & (positions < 1.0)).all(dim=-1)
+        positions = positions * selector[..., None]
+        self._sample_locations = positions
+        if not self._sample_locations.requires_grad:
+            self._sample_locations.requires_grad = True
+        positions_flat = positions.view(-1, 3)
+
+        feature, extend_feature, cell_id, importance = self.multi_layer_tetra(positions_flat, use_extend=True)
+
+        def feature2out(input_feature):
+            h = self.mlp_base_mlp(input_feature).view(*ray_samples.frustums.shape, -1)
+
+            density_before_activation, base_mlp_out = torch.split(h, [1, self.geo_feat_dim], dim=-1)
+            self._density_before_activation = density_before_activation
+
+            # Rectifying the density with an exponential is much more stable than a ReLU or
+            # softplus, because it enables high post-activation (float32) density outputs
+            # from smaller internal (float16) parameters.
+            density = trunc_exp(density_before_activation.to(positions))
+            density = density * selector[..., None]
+            return density, base_mlp_out
+
+        density, density_embedding = feature2out(feature)
+        extend_density, extend_density_embedding = feature2out(extend_feature)
+        return density, density_embedding, extend_density, extend_density_embedding, cell_id, importance
+
+    def get_outputs(
+        self, ray_samples: RaySamples, density_embedding: Optional[Tensor] = None
+    ) -> Dict[FieldHeadNames, Tensor]:
+        assert density_embedding is not None
+        outputs = {}
+        if ray_samples.camera_indices is None:
+            raise AttributeError("Camera indices are not provided.")
+        camera_indices = ray_samples.camera_indices.squeeze()
+        directions = get_normalized_directions(ray_samples.frustums.directions)
+        directions_flat = directions.view(-1, 3)
+        d = self.direction_encoding(directions_flat)
+
+        outputs_shape = ray_samples.frustums.directions.shape[:-1]
+
+        h = torch.cat(
+            [
+                d,
+                density_embedding.view(-1, self.geo_feat_dim),
+            ],
+            dim=-1,
+        )
+        rgb = self.mlp_head(h).view(*outputs_shape, -1).to(directions)
+        outputs.update({FieldHeadNames.RGB: rgb})
+
+        return outputs
+
+    def forward(self, ray_samples: RaySamples, compute_normals: bool = False) -> Dict[FieldHeadNames, Tensor]:
+        """Evaluates the field at points along the ray.
+
+        Args:
+            ray_samples: Samples to evaluate field on.
+        """
+        density, density_embedding, \
+            extend_density, extend_density_embedding, \
+            cell_id, importance = self.get_density(ray_samples)
+
+        field_outputs = self.get_outputs(ray_samples, density_embedding=density_embedding)
+        field_outputs[FieldHeadNames.DENSITY] = density  # type: ignore
+        field_outputs[FieldHeadNames.CELLID] = cell_id
+        field_outputs[FieldHeadNames.IMPORTANCE] = importance
+
+        extend_field_outputs = self.get_outputs(ray_samples, density_embedding=extend_density_embedding)
+        extend_field_outputs[FieldHeadNames.DENSITY] = extend_density
+
+        return field_outputs, extend_field_outputs
