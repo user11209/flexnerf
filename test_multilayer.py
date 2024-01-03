@@ -1,8 +1,22 @@
 import torch
 from flexnerf_field import MultiLayerTetra
 
-TEST_ONE_SEED = True
+MANUAL_TEST = True
+TEST_ONE_SEED = False
 SCAN_SEEDS = False
+
+if MANUAL_TEST:
+  torch.manual_seed(122)
+  aabb = torch.tensor([[0,1],[0,1],[0,1]])
+  multi_layer = MultiLayerTetra(aabb, 1, 20, 16, 10)
+  with torch.no_grad():
+    multi_layer.field[:4,:] = torch.tensor([1,0,0,0]).view(4,1)
+  xyz = torch.zeros(4,3).uniform_(0,1)*0.5 + 0.25
+  print(multi_layer.forward(xyz, use_extend=False))
+  print("\n")
+  print(multi_layer.field[:5, :])
+  print("\n")
+  print(xyz)
 
 if TEST_ONE_SEED:
   torch.manual_seed(97)

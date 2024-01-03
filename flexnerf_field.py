@@ -20,6 +20,9 @@ from nerfstudio.field_components.mlp import MLP
 from nerfstudio.field_components.spatial_distortions import SpatialDistortion
 from nerfstudio.fields.base_field import Field, get_normalized_directions
 
+DIY = False
+DEBUG = True
+DEBUG_file = "/home/zhangjw/nerfstudio/external/flexnerf/log_file.txt"
 DEBUG_FLAG = 0
 DEBUG_FLAG_INNER = 0
 
@@ -54,7 +57,7 @@ def interpolate_field_value(xyz, cells):
         interpolated_feature = interpolated_feature.view(xyz.shape[0], xyz.shape[1], -1)
     return interpolated_feature
 
-def divide_into_children(xyz, cells):
+def divide_into_children(xyz, cells, printing=False):
     xyz: Tensor[sample_num, each_cell_num, 3] or Tensor[sample_num, 3]
     cell_xyz: Tensor[sample_num, 8, 3]
     cell_cut: Tensor[sample_num, 2]
@@ -67,10 +70,12 @@ def divide_into_children(xyz, cells):
         cell_xyz = cells["xyz"]
         cell_cut = cells["cut"]
 
+    cell_cut = cell_cut % 4
+
     canonical = to_canonical(xyz, cell_xyz)
 
     canonical_cut = torch.gather(canonical, 1, cell_cut.long())
-    children_choice = (canonical_cut[:,0] - canonical_cut[:,1] > 0).long()
+    children_choice = (canonical_cut[:,0] - canonical_cut[:,1] < 0).long()
     # return shape of (sample_num)
     return children_choice
 
@@ -82,6 +87,7 @@ class MultiLayerTetra(nn.Module):
                 max_cell_count=8e5,
                 max_point_count=1e5):
         super().__init__()
+        torch.manual_seed(1423457)
         # this list is hard to be reorganized, if using model.load, this list will not reorganize itself, but only the underlying parameters and buffers
         self.register_buffer("aabb", aabb)
         self.register_buffer("feature_dim", torch.tensor(feature_dim, dtype=torch.int32))
@@ -130,7 +136,7 @@ class MultiLayerTetra(nn.Module):
         ## note: this is the importance of each subdivision candidate. If you want to get the importance of a cell subdivision, one way is to set the importance to be the edge of parent cell's cut (perhaps compare to that without the subdivision afterwards). It is necessary to set this to random small values! or else merge_extend will fail to distinguish which edges are leaf edges which need to be sampled on.
         self.register_buffer(
             "importance",
-            torch.empty((self.max_cell_count, 6), dtype=torch.float32).uniform_(0.0005,0.001)
+            torch.empty((self.max_cell_count, 6), dtype=torch.float32).uniform_(0,0.001)
         )
         ## activation_layer stands for the layer where child cell is stored. That is, cells may have a cross-multi-layer parent-child relationship. 
         ## note: A cell is only activated when seach_layer_i(i == activation_layer)
@@ -173,34 +179,49 @@ class MultiLayerTetra(nn.Module):
 
         # !note: registering stop here, organize the first layer of tree and try sampling
         self.organize_layer_0()
-        self.refine_samples(True)
+        self.refine_samples(False)
 
     @torch.inference_mode()
-    def refine_samples(self, update_original):
+    def refine_samples(self, step, update_original=True):
         self.remove_last_sampled()
         # TODO: check boundaries, no to exceed the `max_??_count`, especially for sample_extend. Note, merge_extend lack 1 positional argument for that reason. temporarily set it to be 2. Note, this value means how many parent cells will be divided, so the actual increased cell number is at most twice the value
         if update_original:
-            self.merge_extend(torch.tensor(2, dtype=torch.int64))
+            self.merge_extend(torch.tensor(48, dtype=torch.int64))
         edge_valid = self.sample_extend()
         self.apply_sampled(edge_valid)
+        if update_original and DEBUG:
+            with open(DEBUG_file, "a") as write_file:
+                write_file.write("updating: cell "+str(self.cell_offset[0].item())+" edge "+str(self.edge_offset[0].item())+" point "+str(self.point_offset[0].item())+".\n")
 
     def forward(self, xyz, use_extend=True):
-        cells = self.search_layer_0(xyz)
+        cells, inside_cell = self.search_layer_0(xyz)
         for i in range(1, self.max_layer_num-1):
             cells = self.search_layer_i(xyz, cells, i)
         cell_id = cells["cell_id"]
-        importance = torch.max(self.importance[cell_id, :], axis=-1).values
+        point_id = self.point_index[cell_id, :]
+        cells["feature"] = self.field[point_id, :]
         feature = interpolate_field_value(xyz, cells)
+        feature = torch.where(inside_cell[:,None], feature, 0)
+        importance = torch.where(inside_cell, torch.max(self.importance[cell_id, :], axis=-1).values, 0)
+        cell_id = torch.where(inside_cell, cell_id, 0)
         if not use_extend:
             return feature, None, cell_id, importance
         else:
             cells = self.search_extend(xyz, cells)
+            extend_cell_id = cells["cell_id"]
+            extend_point_id = self.point_index[extend_cell_id, :]
+            cells["feature"] = self.field[extend_point_id, :]
             extend_feature = interpolate_field_value(xyz, cells)
             #? possibly not necessary to pass all the three values all the time?
             return feature, extend_feature, cell_id, importance
 
     @torch.inference_mode()
-    def update_importance(self, related_cell_index, importance_value, update_rate=0.97):
+    def reset_importance(self):
+        count = self.cell_offset[0]
+        self.importance[:count, :] = torch.zeros_like(self.importance[:count, :]).uniform_(0,1)
+
+    @torch.inference_mode()
+    def update_importance(self, related_cell_index, importance_value, update_rate=0.99):
         '''
         a bunch of cells at `related_cell_index` are affected by a training process, and they need to update their importance values. An affected cell is a leaf cell, the importance_value stands for the difference between the cell itself and the subcells created by `sample_extend`. The value will be applied on the cut edge of the cell(self.child_cut).
 
@@ -223,21 +244,28 @@ class MultiLayerTetra(nn.Module):
 
         leading_cell = torch.concatenate([torch.nonzero(cell_changing).view(-1), cell_count*head])
         float_head = torch.tensor([0], dtype=torch.float32, device=cell_changing_nohead.device)
-        sorted_importance_cumsum = torch.concatenate([float_head, torch.cumsum(importance_value, 0)])
+        sorted_importance_cumsum = torch.concatenate([float_head, torch.cumsum(sorted_importance_value, 0)])
 
+        #* the average below should be a powered weight aware of importance.
+        # for example, if importance to update is too small, it should not count! it might be a surface cell, just obstacled in some camera views. for unimportant cells, just wait for the periodic global annealing to remove it.
+        sorted_importance_power = 1 - 1/(1+sorted_importance_value)
+        sorted_power_cumsum = torch.concatenate([float_head, torch.cumsum(sorted_importance_power, 0)])
+
+        #* calculate average and update
         groupby_sum = sorted_importance_cumsum[leading_cell[1:]] - sorted_importance_cumsum[leading_cell[:-1]]
-        groupby_count = leading_cell[1:] - leading_cell[:-1]
+        groupby_count = sorted_power_cumsum[leading_cell[1:]] - sorted_power_cumsum[leading_cell[:-1]] + 1e-4
         groupby_average = groupby_sum / groupby_count
         groupby_cell_index = sorted_related_cell_index[leading_cell[:-1]]
 
-        #* check whether cells are sampled for extension (if not, `importance_value` will usually be 0 for these cells)
+        #* find which edge_incell need to be updated
+        # optional: check whether cells are sampled for extension (if not, `importance_value` will usually be 0 for them)
         groupby_child_cut = self.child_cut[groupby_cell_index, :]
         groupby_edge_idincell = self.edge_idincell_from_point(groupby_child_cut)
-        groupby_edge_valid = (groupby_edge_idincell != -1)
+        # groupby_edge_valid = (groupby_edge_idincell != -1)
 
+        groupby_update_rate = torch.pow(update_rate, groupby_count)
         groupby_importance_last = self.importance[groupby_cell_index, groupby_edge_idincell]
-        groupby_importance_update = torch.where(groupby_edge_valid, groupby_average, grouby_importance_last)
-        groupby_importance_new = groupby_importance_last*update_rate + groupby_importance_update*(1-update_rate)
+        groupby_importance_new = groupby_importance_last*groupby_update_rate + groupby_average*(1-groupby_update_rate)
 
         #* update the importance
         self.importance[groupby_cell_index, groupby_edge_idincell] = groupby_importance_new
@@ -260,23 +288,26 @@ class MultiLayerTetra(nn.Module):
 
         cell_id = torch.zeros(sample_size, dtype=torch.int32, device=xyz.device)
         cell_xyz = self.xyz[:4, :].view(1,4,3).expand(sample_size, 4, 3)
-        cell_feature = self.field[:4, :].view(1,4,-1).expand(sample_size, 4, -1)
 
         cut = self.child_cut[:1, :].view(1, 2).expand(sample_size, 2)
         activation_layer = self.activation_layer[:1].expand(sample_size)
 
+        inside_cell = torch.all(to_canonical(xyz, cell_xyz)>=0, axis=-1)
+        inside_box_lower = torch.all(xyz>=0.25, axis=-1)
+        inside_box_higher = torch.all(xyz<=0.75, axis=-1)
+        inside_box = torch.logical_and(inside_box_higher, inside_box_lower)
+        inside_cell = torch.logical_and(inside_cell, inside_box)
+
         return {"cell_id":          cell_id, 
                 "xyz":              cell_xyz, 
-                "feature":          cell_feature, 
                 "cut":              cut, 
-                "activation_layer": activation_layer}
+                "activation_layer": activation_layer}, inside_cell
 
     def search_layer_i(self, xyz, parent_cells, i):
         sample_num = xyz.shape[0]
 
         parent_id = parent_cells["cell_id"]
         parent_xyz = parent_cells["xyz"]
-        parent_feature = parent_cells["feature"]
         parent_cut = parent_cells["cut"]
         parent_activation_layer = torch.min(parent_cells["activation_layer"], self.max_layer_num)
 
@@ -292,11 +323,6 @@ class MultiLayerTetra(nn.Module):
         abandoned_vertex = torch.gather(parent_cut, 1, 1-children_choice.view(-1,1)).view(-1)
 
         child_vertices_id_substitute = self.point_index[child_cell_id, abandoned_vertex]
-        # **child_feature
-        #? no longer needed, remove it later
-        child_feature = parent_feature.clone()
-        child_feature_substitute = self.field[child_vertices_id_substitute, :]
-        child_feature[torch.arange(sample_num), abandoned_vertex, :] = child_feature_substitute
         # **child_xyz
         child_xyz = parent_xyz.clone()
         cut_point_xyz = parent_xyz[torch.arange(sample_num).view(-1,1), parent_cut, :]
@@ -309,14 +335,12 @@ class MultiLayerTetra(nn.Module):
 
         # filter out inactivated cells
         child_cell_id          = torch.where(child_valid,              child_cell_id,          parent_id)
-        child_feature          = torch.where(child_valid.view(-1,1,1), child_feature,          parent_feature)
         child_xyz              = torch.where(child_valid.view(-1,1,1), child_xyz,              parent_xyz)
         child_cut              = torch.where(child_valid.view(-1,1),   child_cut,              parent_cut)
         child_activation_layer = torch.where(child_valid,              child_activation_layer, parent_activation_layer)
 
         return {"cell_id":          child_cell_id, 
                 "xyz":              child_xyz, 
-                "feature":          child_feature, 
                 "cut":              child_cut, 
                 "activation_layer": child_activation_layer}
 
@@ -366,8 +390,8 @@ class MultiLayerTetra(nn.Module):
         #? number of chosen edges is fixed to be merged_cell_count, but each cell may at most include 6 chosen edges, so the number of actual chosen cell falls far below merged_cell_count.
         sorted_valid_edge_importance, edge_candidate_index_1d = torch.sort(valid_edge_importance.view(-1), descending=True)
         edge_candidate_index_1d = edge_candidate_index_1d[:merged_cell_count]
-        edge_candidate = torch.zeros(self.max_cell_count, 6, dtype=torch.bool)
-        edge_candidate.view(-1).scatter_(0, edge_candidate_index_1d, torch.ones_like(edge_candidate_index_1d, dtype=torch.bool))
+        edge_candidate = torch.zeros(self.max_cell_count, 6, dtype=torch.bool, device=self.activation_layer.device)
+        edge_candidate.view(-1).scatter_(0, edge_candidate_index_1d, torch.ones_like(edge_candidate_index_1d, dtype=torch.bool, device=self.activation_layer.device))
         cell_candidate = (torch.sum(edge_candidate, axis=1) != 0)
         # the following line is only to remove the edge candidate with the least importance, which may create more subcells than expected
         edge_candidate = torch.logical_or(edge_candidate, ~is_leaf_cell.view(-1,1))
@@ -387,7 +411,7 @@ class MultiLayerTetra(nn.Module):
             # bound of sample_value increase with importance
             sample_value = self.importance - average_importance
             # sample rate decrease with iteration count
-            sample_rate = torch.rand(self.max_cell_count,6) * torch.max(sample_value) * 10/(iteration+10)
+            sample_rate = torch.rand(self.max_cell_count,6, device=self.activation_layer.device) * torch.max(sample_value) * 10/(iteration+10)
 
             #** sample a few bunch of edges, at most one edge per cell
             chosen_edge_stage1 = torch.logical_or(edge_determined, \
@@ -415,6 +439,9 @@ class MultiLayerTetra(nn.Module):
 
         self.apply_sampled(edge_valid_for_original)
         print("an additional ", self.extend_cell_offset[0], " cells will be added.")
+        if DEBUG:
+            with open(DEBUG_file, "a") as write_file:
+                write_file.write("an additional "+ str(self.extend_cell_offset[0].item()) + " cells will be added.\n")
 
         #! start setting structural variables
         child_start = self.cell_offset[0]
@@ -433,9 +460,9 @@ class MultiLayerTetra(nn.Module):
         # this next line might be risky, if child cells do not come in pairs, but it is safe for now
         edge_layer_incell = self.layer.view(-1,1).expand(-1,6).clone()
         edge_layer = self.synchronize_cell2edge(edge_layer_incell, "max")
-        cell_valid_for_original = torch.any(edge_valid_for_original, axis=1)
+        cell_valid_for_original = torch.logical_and(torch.any(edge_valid_for_original, axis=1), is_leaf_cell)
         cell_activation_layer = torch.sum(edge_layer*edge_valid_for_original, axis=1).int()
-        self.activation_layer = torch.where(cell_valid_for_original, cell_activation_layer, self.activation_layer)
+        self.activation_layer = torch.where(cell_valid_for_original, cell_activation_layer+1, self.activation_layer)
         self.layer[child_start:child_end] = self.activation_layer[parent_cell_index]
 
         #** set new edge indices
@@ -470,11 +497,11 @@ class MultiLayerTetra(nn.Module):
     @torch.inference_mode()
     def sample_extend(self):
         #? sampling for all cells may be costly, maybe sample for leaf cells only
-        cell_num = self.max_cell_count
+        cell_num = self.max_cell_count.to(self.activation_layer.device)
         is_leaf_cell = self.is_leaf_cell()
         # the following variables are only valid for condition `is_leaf_cell`, that is, only leaf of the tree can choose edges.
-        edge_valid = torch.ones(self.max_cell_count, 6)
-        cell_edge_num = 6*torch.ones_like(self.activation_layer)
+        edge_valid = torch.ones(self.max_cell_count, 6, device=self.activation_layer.device)
+        cell_edge_num = 6*torch.ones_like(self.activation_layer, device=self.activation_layer.device)
         i = torch.tensor(0, dtype=torch.int32, device=self.activation_layer.device)
         while True:
             sample_rate = 1/(20-i)
@@ -547,8 +574,9 @@ class MultiLayerTetra(nn.Module):
         self.layer[child_start:child_end] = self.max_layer_num
 
         # **construct children points
-        divided_point_index_in_cell = self.child_cut[one_cell_per_point, :].long()
-        divided_point_index = torch.gather(parent_point_index, 1, divided_point_index_in_cell)
+        divided_point_idincell = self.child_cut[one_cell_per_point, :].long()
+        parent_point_index_one_cell_per_point = self.point_index[one_cell_per_point, :]
+        divided_point_index = torch.gather(parent_point_index_one_cell_per_point, 1, divided_point_idincell)
         child_field = torch.sum(self.field[divided_point_index, :], axis=1) / 2
         child_xyz = torch.sum(self.xyz[divided_point_index, :], axis=1) / 2
 
@@ -564,7 +592,10 @@ class MultiLayerTetra(nn.Module):
     # ! second level detailed function definition starts here
     def get_tetra_xyz(self, aabb):
         #TODO: get the tetrahedron cover of `aabb`, only xyz values, so shape (4,3)
-        return torch.tensor([[0,0,0], [0,0,1], [0,1,0], [1,0,0]], dtype=torch.float32)
+        # u = 0.25
+        # t = 0.75
+        # return torch.tensor([[u,u,u], [u,u,t], [u,t,u], [t,u,u]], dtype=torch.float32, device=aabb.device)
+        return torch.tensor([[-0.25,0.25,1.5], [-0.25,0.25,-1.5], [2.75,0.25,0], [0.5,3.25,0]])
 
     def is_leaf_cell(self):
         is_leaf_candidate = torch.logical_or(self.activation_layer>=self.max_layer_num, self.activation_layer==-1)
@@ -574,7 +605,7 @@ class MultiLayerTetra(nn.Module):
 
     def choose_edge(self, edge_valid, cell_edge_num, cell_chosen):
         cell_num = edge_valid.shape[0]
-        edge_chosen_index_in_valid = ( torch.rand(cell_num) * cell_edge_num ).int() + 1
+        edge_chosen_index_in_valid = ( torch.rand(cell_num, device=self.activation_layer.device) * cell_edge_num ).int() + 1
         confirmed = torch.zeros(cell_num, dtype=torch.bool, device=edge_valid.device)
         edge_chosen_index = torch.zeros(cell_num, dtype=torch.int64, device=edge_valid.device)
         edge_chosen = torch.zeros(cell_num, 6, dtype=torch.bool, device=edge_valid.device)
@@ -774,6 +805,10 @@ class MultiLayerTetra(nn.Module):
             self.sorted_edge_offset = torch.concatenate((head, offset+1), axis=0)
             self.sorted_edge_index_unique = sorted_edge_index[offset]
             self.edge_sorted[0] = True
+        else:
+            if self.sorted_edge_offset.device != self.activation_layer.device:
+                self.sorted_edge_offset = self.sorted_edge_offset.to(self.activation_layer.device)
+                self.sorted_edge_index_unique = self.sorted_edge_index_unique.to(self.activation_layer.device)
 
 # pylint: disable=attribute-defined-outside-init
 class FlexNerfField(Field):
@@ -788,10 +823,10 @@ class FlexNerfField(Field):
         aabb,
         min_resolution: int = 4,
         feature_dim: int = 32,
-        max_layer_num: int = 1,
+        max_layer_num: int = 20,
         max_point_per_layer: int = 1e5,
-        num_layers: int = 6,
-        hidden_dim: int = 64,
+        num_layers: int = 3,
+        hidden_dim: int = 128,
         geo_feat_dim: int = 15,
         num_layers_color: int = 3,
         hidden_dim_color: int = 64,
@@ -799,6 +834,7 @@ class FlexNerfField(Field):
         implementation: Literal["tcnn", "torch"] = "tcnn",
     ) -> None:
         super().__init__()
+        self.step = 0
         self.register_buffer("aabb", aabb)
         self.feature_dim = feature_dim
 
@@ -867,6 +903,7 @@ class FlexNerfField(Field):
         extend_density, extend_density_embedding = feature2out(extend_feature)
         cell_id = cell_id.view(*ray_samples.frustums.shape, -1)
         importance = importance.view(*ray_samples.frustums.shape, -1)
+
         return density, density_embedding, extend_density, extend_density_embedding, cell_id, importance
 
     def get_outputs(
@@ -880,6 +917,7 @@ class FlexNerfField(Field):
         directions = get_normalized_directions(ray_samples.frustums.directions)
         directions_flat = directions.view(-1, 3)
         d = self.direction_encoding(directions_flat)
+        d = torch.zeros_like(d)
 
         outputs_shape = ray_samples.frustums.directions.shape[:-1]
 
@@ -914,3 +952,16 @@ class FlexNerfField(Field):
         extend_field_outputs[FieldHeadNames.DENSITY] = extend_density
 
         return field_outputs, extend_field_outputs
+
+    def test_forward(self, step):
+        if step == 0:
+            return
+        device = self.multi_layer_tetra.xyz.device
+        rays_o = torch.tensor([-0.05, 0.79, 0.24]).to(device)
+        rays_d = torch.tensor([0.85, -0.6, 0.6]).to(device)
+        xyz = rays_o[None, :] + torch.linspace(0,1,401).to(device)[112:, None]*rays_d[None, :]
+        feature, extend_feature, cell_id, importance = self.multi_layer_tetra.forward(xyz)
+        print(cell_id)
+        print(feature[:, :2])
+
+        assert 0
