@@ -174,10 +174,10 @@ class FlexNeRFModel(Model):
         self.lpips = LearnedPerceptualImagePatchSimilarity(normalize=True)
 
         # update field
-        self.result = {'cell_id':None, 
+        self.result = {'cell_id':None, 'extend_cell_id':None,
                       'weights_original':None, 'rgb_original':None, 
                       'weights_extend':None, 'rgb_extend':None, 
-                      'pred_rgb':None, 'gt_rgb':None}
+                      'pred_rgb':None, 'gt_rgb':None, 'density':None}
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
         param_groups = {}
@@ -189,76 +189,52 @@ class FlexNeRFModel(Model):
     ) -> List[TrainingCallback]:
         callbacks = []
         kwargs_dict = {"result": self.result}
-        callbacks.append(
-                TrainingCallback(
+        #? should be put into config
+        importance_profile_start_step = 2000
+        update_importance_callback = TrainingCallback(
                     where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
                     update_every_num_iters=1,
-                    func=self.update_importance_from_result,
+                    func=partial(self.field.multi_layer_tetra.update_importance_from_result, 
+                                start_step=importance_profile_start_step),
                     kwargs=kwargs_dict,
                 )
             )
-        #? global importance annealing may have other period, and other ratio
-        def global_importance_annealing_callback(step):
-            self.field.multi_layer_tetra.importance *= 0.5
-        callbacks.append(
-                TrainingCallback(
+
+        global_annealing_callback = TrainingCallback(
                     where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
-                    update_every_num_iters=500,
-                    func=global_importance_annealing_callback,
+                    update_every_num_iters=250,
+                    func=partial(self.field.multi_layer_tetra.global_importance_annealing_callback,
+                                start_step=importance_profile_start_step),
                 )
-            )
-        callbacks.append(
-                TrainingCallback(
+
+        false_refine_callback = TrainingCallback(
                     where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
-                    update_every_num_iters=500,
-                    func=partial(self.field.multi_layer_tetra.refine_samples, update_original=False),
+                    update_every_num_iters=50,
+                    func=partial(self.field.multi_layer_tetra.refine_samples, update_original=False, 
+                                start_step=importance_profile_start_step),
                 )
-            )
-        callbacks.append(
-                TrainingCallback(
+
+        true_refine_callback = TrainingCallback(
                     where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
-                    update_every_num_iters=5000,
-                    func=partial(self.field.multi_layer_tetra.refine_samples, update_original=True),
+                    update_every_num_iters=1000,
+                    func=partial(self.field.multi_layer_tetra.refine_samples, update_original=True,
+                                start_step=importance_profile_start_step),
                 )
-            )
-        #! debug
+                
         def update_step(step):
-            self.field.step = step
+            self.field.multi_layer_tetra.step = step
         update_step_callback = TrainingCallback(
             where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
             update_every_num_iters=1,
             func=update_step,
         )
+        
+        callbacks.append(update_importance_callback)
+        callbacks.append(global_annealing_callback)
+        callbacks.append(false_refine_callback)
+        callbacks.append(true_refine_callback)
         callbacks.append(update_step_callback)
         return callbacks
-
-    @torch.inference_mode()
-    def update_importance_from_result(self, result, step):
-        '''
-        result = {'cell_id':..., 
-                  'weights_original':..., 'rgb_original':..., 
-                  'weights_extend':..., 'rgb_extend':..., 
-                  'pred_rgb':..., 'gt_rgb':...}
-        '''
-        if step == 0:
-            return
-
-        cell_index = result['cell_id']
-        weights_original = result['weights_original']
-        rgb_original = result['rgb_original']
-        weights_extend = result['weights_extend']
-        rgb_extend = result['rgb_extend']
-        pred_rgb = result['pred_rgb']
-        gt_rgb = result['gt_rgb']
-
-        acc_rgb_diff_2 = torch.sum((pred_rgb-gt_rgb)*(pred_rgb-gt_rgb), axis=-1)[:, None]
-        raw_rgb_diff_2 = torch.sum((rgb_original - rgb_extend)*(rgb_original - rgb_extend), axis=-1)
-        raw_wei_diff = (weights_original-weights_extend)*100
-        raw_wei_diff_2 = (raw_wei_diff*raw_wei_diff).unsqueeze(-1)
-
-        importance_value = acc_rgb_diff_2 * raw_rgb_diff_2 * raw_wei_diff_2
-        
-        self.field.multi_layer_tetra.update_importance(cell_index, importance_value)
 
     def get_outputs(self, ray_bundle: RayBundle):
         ray_samples: RaySamples
@@ -270,58 +246,87 @@ class FlexNeRFModel(Model):
 
         weights = ray_samples.get_weights(field_outputs[FieldHeadNames.DENSITY])
 
-        rgb = self.renderer_rgb(rgb=field_outputs[FieldHeadNames.RGB], weights=weights)
+        rgb = self.renderer_rgb(rgb=field_outputs[FieldHeadNames.RGB], weights=weights, background_color="black")
+        if DEBUG:
+            if torch.any(torch.isnan(rgb)):
+                nan_id = torch.nonzero(torch.any(torch.isnan(rgb), axis=-1)).view(-1)[0]
+                with open(DEBUG_file, "a") as write_file:
+                    write_file.write("look, rendering get an rgb of nan at id " + str(nan_id) + ".\n")
+                    write_file.write("we need to list almost all possible info, for example: \n")
+                    write_file.write("============== weights =============\n")
+                    write_file.write(str(weights[nan_id]))
+                    write_file.write("\n============== density =============\n")
+                    write_file.write(str(field_outputs[FieldHeadNames.DENSITY][nan_id]))
+                    write_file.write("\n============== rgb =================\n")
+                    write_file.write(str(field_outputs[FieldHeadNames.RGB][nan_id]))
+                    write_file.write("\n====================== Assertion Failed =====================")
+                assert 0
+
         depth = self.renderer_depth(weights=weights, ray_samples=ray_samples)
         accumulation = self.renderer_accumulation(weights=weights)
 
         #? change the `True` on the next line to be something in `self.config`, about computing extend
         if True:
             weights_extend = ray_samples.get_weights(extend_field_outputs[FieldHeadNames.DENSITY])
-            rgb_extend = self.renderer_rgb(rgb=extend_field_outputs[FieldHeadNames.RGB], weights=weights_extend)
+            rgb_extend = self.renderer_rgb(rgb=extend_field_outputs[FieldHeadNames.RGB], weights=weights_extend, background_color="black")
 
         #? change the `True` on the next line to be something in `self.config`, about visualizing importance
         if True:
             @torch.inference_mode()
-            def importance2density_n_rgb(importance):
-                density_raw = importance*100
-                relative_importance = importance*12345.678
-                rgb_raw = torch.cat([torch.sin(relative_importance), torch.sin(1.11*relative_importance), torch.sin(1.23*relative_importance)], axis=-1)
+            def importance2density_n_rgb(importance, cell_id):
+                # for importance
+                importance_rgb_raw = ((torch.log10(importance + 1e-8) + 8) / 9).expand(-1,-1,3)
+                # for cellis
+                rgb_mid = cell_id.float()*12345.678
+                rgb_raw = torch.cat([torch.sin(rgb_mid), torch.sin(1.11*rgb_mid), torch.sin(1.23*rgb_mid)], axis=-1)
+                rgb_raw = (rgb_raw + 1)/2
 
-                return density_raw, rgb_raw
+                return importance_rgb_raw, rgb_raw
             
             importance_value = field_outputs[FieldHeadNames.IMPORTANCE]
             cell_id = field_outputs[FieldHeadNames.CELLID]
+            extend_cell_id = extend_field_outputs[FieldHeadNames.CELLID]
 
             global DEBUG_global_i
             DEBUG_global_i += 1
-            if DEBUG and DEBUG_global_i%100==0:
-                if torch.any(torch.isnan(importance_value)):
-                    torch.set_printoptions(threshold=np.inf)
-                    print("=================== importance value =====================")
-                    print(importance_value.unsqueeze(-1))
-                    print("=================== cell ids =====================")
-                    print(cell_id.squeeze(-1))
-                    assert 0
+            if DEBUG and DEBUG_global_i%100==0 and DEBUG_global_i>=2000:
                 with open(DEBUG_file, "a") as write_file:
                     write_file.write("the maximum importance sampled is "+ str(torch.max(importance_value).item())+ ".\n")
 
-            importance_density_raw, importance_rgb_raw = importance2density_n_rgb(importance_value)
-            weights_importance = ray_samples.get_weights(importance_density_raw)
-            rgb_importance = self.renderer_rgb(rgb=importance_rgb_raw, weights=weights_importance)
+            importance_rgb_raw, cellid_rgb_raw = importance2density_n_rgb(importance_value, cell_id)
 
         # update self.result for callbacks
         self.result["cell_id"] = cell_id
+        self.result["extend_cell_id"] = extend_cell_id
         self.result["weights_original"] = weights
         self.result["rgb_original"] = field_outputs[FieldHeadNames.RGB]
         self.result["weights_extend"] = weights_extend
         self.result["rgb_extend"] = extend_field_outputs[FieldHeadNames.RGB]
+        self.result["density"] = field_outputs[FieldHeadNames.DENSITY]
+
+        with torch.inference_mode():
+            slice_index = 65
+            slice_density = field_outputs[FieldHeadNames.DENSITY].clone()
+            slice_density[:, slice_index] = 10000
+            slice_cellid_rgb_raw = field_outputs[FieldHeadNames.RGB].clone()
+            slice_cellid_rgb_raw[:, slice_index, :] = cellid_rgb_raw[:, slice_index, :]
+            weights_slice = ray_samples.get_weights(slice_density)
+            weights_slice_clear = torch.zeros_like(weights_slice)
+            weights_slice_clear[:, slice_index] = 1
+            rgb_cellid_slice = self.renderer_rgb(rgb=slice_cellid_rgb_raw, weights=weights_slice)
+            rgb_importance_slice_clear = self.renderer_rgb(rgb=importance_rgb_raw, weights=weights_slice_clear)
+            rgb_cellid_slice_clear = self.renderer_rgb(rgb=slice_cellid_rgb_raw, weights=weights_slice_clear)
+            rgb_cellid_onobj = self.renderer_rgb(rgb=cellid_rgb_raw, weights=weights, background_color="black")
 
         outputs = {
             "rgb": rgb,
             "accumulation": accumulation,
             "depth": depth,
             "rgb_extend": rgb_extend,
-            "importance": rgb_importance
+            "importance_slice_clear": rgb_importance_slice_clear,
+            "cellid_slice_clear": rgb_cellid_slice_clear,
+            "cellid_slice": rgb_cellid_slice,
+            "cellid_onobj": rgb_cellid_onobj
         }
 
         return outputs
@@ -343,6 +348,25 @@ class FlexNeRFModel(Model):
             pred_accumulation=outputs["accumulation"],
             gt_image=image,
         )
+        if DEBUG:
+            pred_rgb_nan = torch.isnan(pred_rgb)
+            gt_rgb_nan = torch.isnan(gt_rgb)
+            if torch.any(pred_rgb_nan) or torch.any(gt_rgb_nan):
+                if torch.any(pred_rgb_nan):
+                    sample_id = torch.nonzero(torch.any(torch.isnan(pred_rgb), axis=-1)).view(-1)[0]
+                if torch.any(gt_rgb_nan):
+                    sample_id = torch.nonzero(torch.any(torch.isnan(gt_rgb), axis=-1)).view(-1)[0]
+                with open(DEBUG_file, "a") as write_file:
+                    write_file.write("====================== image =========================\n")
+                    write_file.write(str(image[sample_id]))
+                    write_file.write("\n====================== gt_rgb ========================\n")
+                    write_file.write(str(gt_rgb[sample_id]))
+                    write_file.write("\n====================== pred_rgb ======================\n")
+                    write_file.write(str(pred_rgb[sample_id]))
+                    write_file.write("\n====================== out_rgb =======================\n")
+                    write_file.write(str(outputs["rgb"][sample_id]))
+                    write_file.write("\n======================================================")
+                assert 0
 
         extend_pred_rgb, extend_gt_rgb = self.renderer_rgb.blend_background_for_loss_computation(
             pred_image=outputs["rgb_extend"],
@@ -365,7 +389,10 @@ class FlexNeRFModel(Model):
         predicted_rgb = outputs["rgb"]  # Blended with background (black if random background)
         gt_rgb = self.renderer_rgb.blend_background(gt_rgb)
         acc = colormaps.apply_colormap(outputs["accumulation"])
-        importance = outputs["importance"]
+        importance_slice_clear = outputs["importance_slice_clear"]
+        cellid_slice = outputs["cellid_slice"]
+        cellid_slice_clear = outputs["cellid_slice_clear"]
+        cellid_onobj = outputs["cellid_onobj"]
         depth = colormaps.apply_depth_colormap(
             outputs["depth"],
             accumulation=outputs["accumulation"],
@@ -379,18 +406,16 @@ class FlexNeRFModel(Model):
         gt_rgb = torch.moveaxis(gt_rgb, -1, 0)[None, ...]
         predicted_rgb = torch.moveaxis(predicted_rgb, -1, 0)[None, ...]
 
-        gt_wo_mean = gt_rgb - torch.mean(gt_rgb)
-        pred_wo_mean = predicted_rgb - torch.mean(predicted_rgb)
-        gt_var = torch.sqrt(torch.mean(gt_wo_mean*gt_wo_mean))
-        pred_var = torch.sqrt(torch.mean(pred_wo_mean*pred_wo_mean))
         psnr = self.psnr(gt_rgb, predicted_rgb)
         ssim = self.ssim(gt_rgb, predicted_rgb)
         lpips = self.lpips(gt_rgb, predicted_rgb)
 
         # all of these metrics will be logged as scalars
-        metrics_dict = {"psnr": float(psnr.item()), "ssim": float(ssim), "gt_var": float(gt_var.item()), "pred_var": float(pred_var.item())}  # type: ignore
+        metrics_dict = {"psnr": float(psnr.item()), "ssim": float(ssim)}  # type: ignore
         metrics_dict["lpips"] = float(lpips)
 
-        images_dict = {"img": combined_rgb, "accumulation": combined_acc, "depth": combined_depth, "importance": importance}
+        images_dict = {"img": combined_rgb, "accumulation": combined_acc, "depth": combined_depth, 
+                        "importance_slice_clear": importance_slice_clear, "cellid_slice": cellid_slice, "cellid_slice_clear": cellid_slice_clear,
+                        "cellid_onobj": cellid_onobj}
 
         return metrics_dict, images_dict

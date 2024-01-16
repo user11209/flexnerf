@@ -1,0 +1,223 @@
+the maximum importance sampled is 9.253739335690625e-06.
+an additional 2 cells will be added.
+updating: cell 3 edge 10 point 5.
+cell 0 is updating its edge 1 with new value 9.253739335690625e-06 and momentum 2.760350753305829e-06
+the maximum importance sampled is 5.457333099911921e-05.
+cell 1 is updating its edge 3 with new value 6.0670299717457965e-05 and momentum 0.003704667557030916
+the maximum importance sampled is 7.317139534279704e-05.
+cell 0 is updating its edge 1 with new value 9.253739335690625e-06 and momentum 0.020754734054207802
+the maximum importance sampled is 0.00012131399853387848.
+cell 1 is updating its edge 0 with new value 3.017517201442388e-06 and momentum 0.017036404460668564
+the maximum importance sampled is 0.00012131399853387848.
+cell 0 is updating its edge 1 with new value 9.253739335690625e-06 and momentum 0.014635405503213406
+the maximum importance sampled is 0.00012131399853387848.
+cell 1 is updating its edge 2 with new value 6.625350579270162e-06 and momentum 0.01220895629376173
+the maximum importance sampled is 0.00012131399853387848.
+cell 0 is updating its edge 1 with new value 7.4029917414009105e-06 and momentum 0.010104225017130375
+the maximum importance sampled is 0.00012131399853387848.
+cell 1 is updating its edge 5 with new value 3.3773389986890834e-06 and momentum 0.008274538442492485
+the maximum importance sampled is 0.00012131399853387848.
+cell 0 is updating its edge 1 with new value 7.4029917414009105e-06 and momentum 0.007223121821880341
+the maximum importance sampled is 0.00012131399853387848.
+cell 1 is updating its edge 3 with new value 6.19234997429885e-05 and momentum 0.00618503475561738
+the maximum importance sampled is 0.00012131399853387848.
+an additional 4 cells will be added.
+updating: cell 7 edge 18 point 7.
+cell 0 is updating its edge 1 with new value 5.922393484070199e-06 and momentum 0.005477231461554766
+the maximum importance sampled is 0.0002794773899950087.
+cell 5 is updating its edge 0 with new value 1.7879735878523206e-06 and momentum 0.01993096061050892
+the maximum importance sampled is 0.0002864466223400086.
+cell 6 is updating its edge 1 with new value 5.481419793795794e-05 and momentum 0.0260330643504858
+the maximum importance sampled is 0.0002864466223400086.
+cell 0 is updating its edge 1 with new value 5.922393484070199e-06 and momentum 0.023903945460915565
+the maximum importance sampled is 0.0002864466223400086.
+cell 5 is updating its edge 1 with new value 2.8267138532100944e-06 and momentum 0.02296125330030918
+the maximum importance sampled is 0.0002864466223400086.
+cell 6 is updating its edge 1 with new value 5.635225534206256e-05 and momentum 0.02070458233356476
+the maximum importance sampled is 0.0002885329886339605.
+cell 0 is updating its edge 1 with new value 4.737914878205629e-06 and momentum 0.017596503719687462
+the maximum importance sampled is 0.0002885329886339605.
+cell 5 is updating its edge 5 with new value 1.4022558616488823e-06 and momentum 0.01441643200814724
+the maximum importance sampled is 0.0002885329886339605.
+cell 6 is updating its edge 5 with new value 4.195339442958357e-06 and momentum 0.011803950183093548
+the maximum importance sampled is 0.0002885329886339605.
+cell 0 is updating its edge 1 with new value 4.737914878205629e-06 and momentum 0.010760686360299587
+the maximum importance sampled is 0.00029377074679359794.
+an additional 8 cells will be added.
+updating: cell 15 edge 28 point 9.
+cell 0 is updating its edge 1 with new value 3.7903319025645033e-06 and momentum 0.008948931470513344
+the maximum importance sampled is 5.877891817362979e-05.
+cell 14 is updating its edge 4 with new value 4.346136392996414e-06 and momentum 0.014544137753546238
+the maximum importance sampled is 6.125453364802524e-05.
+cell 13 is updating its edge 0 with new value 6.011397636029869e-05 and momentum 0.01552997250109911
+the maximum importance sampled is 8.74829784152098e-05.
+cell 12 is updating its edge 4 with new value 1.1199932714589522e-06 and momentum 0.016066091135144234
+the maximum importance sampled is 9.70072578638792e-05.
+cell 0 is updating its edge 1 with new value 3.7903319025645033e-06 and momentum 0.013170559890568256
+the maximum importance sampled is 9.70072578638792e-05.
+cell 14 is updating its edge 1 with new value 4.412671387399314e-06 and momentum 0.012081715278327465
+the maximum importance sampled is 9.70072578638792e-05.
+cell 13 is updating its edge 4 with new value 8.57250597618986e-06 and momentum 0.009960167109966278
+the maximum importance sampled is 9.70072578638792e-05.
+cell 12 is updating its edge 4 with new value 1.1199932714589522e-06 and momentum 0.008156070485711098
+the maximum importance sampled is 9.70072578638792e-05.
+cell 0 is updating its edge 1 with new value 3.0322655675263377e-06 and momentum 0.00693304929882288
+the maximum importance sampled is 0.00010227082384517416.
+cell 14 is updating its edge 1 with new value 4.412671387399314e-06 and momentum 0.00839545950293541
+the maximum importance sampled is 0.00010765546176116914.
+an additional 12 cells will be added.
+updating: cell 27 edge 40 point 11.
+cell 0 is updating its edge 1 with new value 2.42581245402107e-06 and momentum 0.007075496483594179
+the maximum importance sampled is 0.0005138536216691136.
+cell 19 is updating its edge 0 with new value 0.0007977899513207376 and momentum 0.024050850421190262
+the maximum importance sampled is 0.0008286003139801323.
+cell 20 is updating its edge 4 with new value 7.3084702307824045e-06 and momentum 0.023207426071166992
+the maximum importance sampled is 0.0008616136619821191.
+cell 21 is updating its edge 5 with new value 4.775385150423972e-06 and momentum 0.020973926410079002
+the maximum importance sampled is 0.0008616136619821191.
+cell 26 is updating its edge 2 with new value 4.529729267233051e-06 and momentum 0.017402365803718567
+the maximum importance sampled is 0.0008616136619821191.
+cell 0 is updating its edge 1 with new value 1.940650008691591e-06 and momentum 0.014297823421657085
+the maximum importance sampled is 0.0008616136619821191.
+cell 19 is updating its edge 1 with new value 2.1928146452410147e-05 and momentum 0.012194076552987099
+the maximum importance sampled is 0.0008616136619821191.
+cell 20 is updating its edge 4 with new value 7.3084702307824045e-06 and momentum 0.010009871795773506
+the maximum importance sampled is 0.0008616136619821191.
+cell 21 is updating its edge 1 with new value 5.048095317761181e-06 and momentum 0.00984356552362442
+the maximum importance sampled is 0.0008616136619821191.
+cell 26 is updating its edge 3 with new value 6.538999059557682e-06 and momentum 0.008125370368361473
+the maximum importance sampled is 0.0009012931259348989.
+an additional 14 cells will be added.
+updating: cell 41 edge 52 point 13.
+cell 30 is updating its edge 3 with new value 3.5350763027963694e-06 and momentum 0.012025352567434311
+the maximum importance sampled is 0.00042011658661067486.
+cell 29 is updating its edge 3 with new value 9.08712809177814e-06 and momentum 0.022346200421452522
+the maximum importance sampled is 0.004257436841726303.
+cell 28 is updating its edge 2 with new value 0.0042882212437689304 and momentum 0.019457828253507614
+the maximum importance sampled is 0.004290980286896229.
+cell 27 is updating its edge 3 with new value 8.43880570755573e-06 and momentum 0.01676288992166519
+the maximum importance sampled is 0.004311344586312771.
+cell 0 is updating its edge 1 with new value 1.5525200751653756e-06 and momentum 0.01374053955078125
+the maximum importance sampled is 0.004311344586312771.
+cell 38 is updating its edge 5 with new value 2.279959971929202e-06 and momentum 0.014084787108004093
+the maximum importance sampled is 0.0046337563544511795.
+cell 32 is updating its edge 3 with new value 4.106673713977216e-06 and momentum 0.013998248614370823
+the maximum importance sampled is 0.0046337563544511795.
+cell 31 is updating its edge 0 with new value 6.899806066940073e-06 and momentum 0.013413181528449059
+the maximum importance sampled is 0.0046337563544511795.
+cell 30 is updating its edge 3 with new value 3.5350763027963694e-06 and momentum 0.011777668260037899
+the maximum importance sampled is 0.0046337563544511795.
+cell 29 is updating its edge 1 with new value 7.251359420479275e-06 and momentum 0.010993101634085178
+the maximum importance sampled is 0.0046337563544511795.
+an additional 8 cells will be added.
+updating: cell 49 edge 58 point 14.
+cell 31 is updating its edge 0 with new value 6.899806066940073e-06 and momentum 0.009145962074398994
+the maximum importance sampled is 9.852972652879544e-06.
+the maximum importance sampled is 0.0008684248314239085.
+cell 43 is updating its edge 4 with new value 9.680677067080978e-06 and momentum 0.01502941083163023
+the maximum importance sampled is 0.0008794024470262229.
+cell 0 is updating its edge 1 with new value 9.936128435583669e-07 and momentum 0.016833599656820297
+the maximum importance sampled is 0.0008794024470262229.
+cell 41 is updating its edge 4 with new value 5.071181021776283e-07 and momentum 0.01392184104770422
+the maximum importance sampled is 0.0011314445873722434.
+cell 47 is updating its edge 5 with new value 8.758652256801724e-07 and momentum 0.012874355539679527
+the maximum importance sampled is 0.0011314445873722434.
+cell 38 is updating its edge 4 with new value 1.9355165932211094e-06 and momentum 0.010580191388726234
+the maximum importance sampled is 0.0016839859308674932.
+cell 45 is updating its edge 0 with new value 7.104486030584667e-07 and momentum 0.010930340737104416
+the maximum importance sampled is 0.0016839859308674932.
+cell 32 is updating its edge 2 with new value 1.978783529921202e-06 and momentum 0.01011127233505249
+the maximum importance sampled is 0.002199919195845723.
+cell 44 is updating its edge 0 with new value 9.593922186468262e-06 and momentum 0.011115879751741886
+the maximum importance sampled is 0.002199919195845723.
+cell 31 is updating its edge 2 with new value 9.05910292203771e-06 and momentum 0.009281392209231853
+the maximum importance sampled is 0.002992491004988551.
+an additional 8 cells will be added.
+updating: cell 57 edge 64 point 15.
+cell 51 is updating its edge 4 with new value 8.196693670470268e-06 and momentum 0.011162308044731617
+the maximum importance sampled is 0.001168193412013352.
+cell 38 is updating its edge 2 with new value 2.2616993646806804e-06 and momentum 0.013071379624307156
+the maximum importance sampled is 0.001168193412013352.
+cell 53 is updating its edge 5 with new value 6.397852303052787e-06 and momentum 0.010732139460742474
+the maximum importance sampled is 0.002703336765989661.
+cell 45 is updating its edge 5 with new value 3.95072675019037e-07 and momentum 0.013279367238283157
+the maximum importance sampled is 0.0031776023097336292.
+cell 0 is updating its edge 1 with new value 6.359122721733002e-07 and momentum 0.01089777983725071
+the maximum importance sampled is 0.0031776023097336292.
+cell 50 is updating its edge 4 with new value 1.2928790056321304e-06 and momentum 0.009118374437093735
+the maximum importance sampled is 0.0031776023097336292.
+cell 32 is updating its edge 2 with new value 1.978783529921202e-06 and momentum 0.008518516086041927
+the maximum importance sampled is 0.0031776023097336292.
+cell 52 is updating its edge 5 with new value 5.778566446679179e-06 and momentum 0.007199931889772415
+the maximum importance sampled is 0.0031776023097336292.
+cell 41 is updating its edge 3 with new value 6.441116966016125e-06 and momentum 0.007516309153288603
+the maximum importance sampled is 0.0031776023097336292.
+cell 54 is updating its edge 5 with new value 2.728903837123653e-06 and momentum 0.00615535257384181
+the maximum importance sampled is 0.0031776023097336292.
+an additional 8 cells will be added.
+updating: cell 65 edge 70 point 16.
+cell 51 is updating its edge 3 with new value 5.214599696046207e-06 and momentum 0.005039911717176437
+the maximum importance sampled is 0.020226415246725082.
+cell 62 is updating its edge 5 with new value 9.805138688534498e-06 and momentum 0.013761160895228386
+the maximum importance sampled is 0.020226415246725082.
+cell 41 is updating its edge 2 with new value 4.437019924807828e-06 and momentum 0.012301608920097351
+the maximum importance sampled is 0.020226415246725082.
+cell 60 is updating its edge 2 with new value 1.472732378715591e-06 and momentum 0.010088364593684673
+the maximum importance sampled is 0.020226415246725082.
+cell 32 is updating its edge 0 with new value 9.653101187723223e-06 and momentum 0.014125472865998745
+the maximum importance sampled is 0.020226415246725082.
+cell 58 is updating its edge 4 with new value 6.9864950091869105e-06 and momentum 0.011698815040290356
+the maximum importance sampled is 0.020226415246725082.
+cell 0 is updating its edge 1 with new value 3.255871092733287e-07 and momentum 0.01329486258327961
+the maximum importance sampled is 0.020269012078642845.
+cell 52 is updating its edge 4 with new value 4.398612873046659e-06 and momentum 0.011898866854608059
+the maximum importance sampled is 0.020803017541766167.
+cell 63 is updating its edge 1 with new value 5.739545485994313e-06 and momentum 0.010046012699604034
+the maximum importance sampled is 0.02101561613380909.
+cell 45 is updating its edge 1 with new value 8.891154720913619e-06 and momentum 0.010580258443951607
+the maximum importance sampled is 0.02101561613380909.
+an additional 8 cells will be added.
+updating: cell 73 edge 76 point 17.
+cell 0 is updating its edge 1 with new value 2.604697044716886e-07 and momentum 0.011314373463392258
+the maximum importance sampled is 0.0019493080908432603.
+cell 64 is updating its edge 4 with new value 2.3723196136415936e-06 and momentum 0.012944296002388
+the maximum importance sampled is 0.0019493080908432603.
+cell 32 is updating its edge 3 with new value 4.106673713977216e-06 and momentum 0.01374936755746603
+the maximum importance sampled is 0.002544567221775651.
+cell 66 is updating its edge 2 with new value 4.50541301688645e-06 and momentum 0.014287227764725685
+the maximum importance sampled is 0.009028465487062931.
+cell 51 is updating its edge 2 with new value 4.931526746076997e-06 and momentum 0.01587037555873394
+the maximum importance sampled is 0.009458210319280624.
+cell 68 is updating its edge 5 with new value 3.226198487027432e-06 and momentum 0.013882724568247795
+the maximum importance sampled is 0.009458210319280624.
+cell 57 is updating its edge 0 with new value 6.82316886013723e-06 and momentum 0.011663022451102734
+the maximum importance sampled is 0.009458210319280624.
+cell 57 is updating its edge 0 with new value 6.82316886013723e-06 and momentum 0.0096626877784729
+the maximum importance sampled is 0.00990217924118042.
+cell 60 is updating its edge 1 with new value 2.4438539185211994e-05 and momentum 0.008743193931877613
+the maximum importance sampled is 0.0099449772387743.
+cell 72 is updating its edge 4 with new value 8.942950444179587e-06 and momentum 0.01212796475738287
+the maximum importance sampled is 0.0099449772387743.
+an additional 24 cells will be added.
+updating: cell 97 edge 94 point 20.
+cell 94 is updating its edge 2 with new value 5.0145804380008485e-06 and momentum 0.010127685032784939
+the maximum importance sampled is 0.012332078069448471.
+cell 78 is updating its edge -1 with new value 6.738103365933057e-06 and momentum 0.012849434278905392
+the maximum importance sampled is 0.012421457096934319.
+cell 0 is updating its edge 1 with new value 1.667006159777884e-07 and momentum 0.01685742661356926
+the maximum importance sampled is 0.01732734963297844.
+cell 79 is updating its edge -1 with new value 3.8096331991255283e-06 and momentum 0.01612599566578865
+the maximum importance sampled is 0.01732734963297844.
+cell 96 is updating its edge 0 with new value 9.504693480266724e-06 and momentum 0.015033659525215626
+the maximum importance sampled is 0.017400311306118965.
+cell 80 is updating its edge 4 with new value 4.9457694331067614e-06 and momentum 0.014119594357907772
+the maximum importance sampled is 0.017680490389466286.
+cell 0 is updating its edge 1 with new value 1.3336050130874355e-07 and momentum 0.017024321481585503
+the maximum importance sampled is 0.017680490389466286.
+cell 81 is updating its edge 5 with new value 6.805426892242394e-06 and momentum 0.01677919179201126
+the maximum importance sampled is 0.017680490389466286.
+cell 31 is updating its edge 4 with new value 5.141131168784341e-06 and momentum 0.013748593628406525
+the maximum importance sampled is 0.017762232571840286.
+cell 82 is updating its edge 3 with new value 6.5289873418805655e-06 and momentum 0.012354584410786629
+the maximum importance sampled is 0.01776602491736412.
+the maximum importance sampled is 0.01776602491736412.

@@ -26,6 +26,8 @@ DEBUG_file = "/home/zhangjw/nerfstudio/external/flexnerf/log_file.txt"
 DEBUG_FLAG = 0
 DEBUG_FLAG_INNER = 0
 
+FILTER_OUT_BOX = True
+
 def to_canonical(xyz, cell_xyz):
     xyz: Tensor[sample_num, 3]
     cell_xyz: Tensor[sample_num, 4, 3]
@@ -84,10 +86,11 @@ class MultiLayerTetra(nn.Module):
                 aabb,
                 feature_dim = 32,
                 max_layer_num=20,
-                max_cell_count=8e5,
-                max_point_count=1e5):
+                max_cell_count=8e4,
+                max_point_count=1e4):
         super().__init__()
         torch.manual_seed(1423457)
+        self.step = 0
         # this list is hard to be reorganized, if using model.load, this list will not reorganize itself, but only the underlying parameters and buffers
         self.register_buffer("aabb", aabb)
         self.register_buffer("feature_dim", torch.tensor(feature_dim, dtype=torch.int32))
@@ -136,7 +139,7 @@ class MultiLayerTetra(nn.Module):
         ## note: this is the importance of each subdivision candidate. If you want to get the importance of a cell subdivision, one way is to set the importance to be the edge of parent cell's cut (perhaps compare to that without the subdivision afterwards). It is necessary to set this to random small values! or else merge_extend will fail to distinguish which edges are leaf edges which need to be sampled on.
         self.register_buffer(
             "importance",
-            torch.empty((self.max_cell_count, 6), dtype=torch.float32).uniform_(0,0.001)
+            torch.empty((self.max_cell_count, 6), dtype=torch.float32).uniform_(0,0.00001)
         )
         ## activation_layer stands for the layer where child cell is stored. That is, cells may have a cross-multi-layer parent-child relationship. 
         ## note: A cell is only activated when seach_layer_i(i == activation_layer)
@@ -176,17 +179,22 @@ class MultiLayerTetra(nn.Module):
 
         # !note: the following values contain some flags valueable in tree organization
         self.register_buffer("edge_sorted", torch.tensor([False]))
+        self.register_buffer("importance_momentum", torch.tensor([0.0]))
+        self.register_buffer("weights_momentum", torch.tensor([0.0]))
 
         # !note: registering stop here, organize the first layer of tree and try sampling
         self.organize_layer_0()
-        self.refine_samples(False)
+        self.refine_samples(0, update_original=False, start_step=0)
+        self.sorted_edge_offset = None
 
     @torch.inference_mode()
-    def refine_samples(self, step, update_original=True):
+    def refine_samples(self, step, update_original=True, start_step=0):
+        if step < start_step:
+            return
         self.remove_last_sampled()
         # TODO: check boundaries, no to exceed the `max_??_count`, especially for sample_extend. Note, merge_extend lack 1 positional argument for that reason. temporarily set it to be 2. Note, this value means how many parent cells will be divided, so the actual increased cell number is at most twice the value
         if update_original:
-            self.merge_extend(torch.tensor(48, dtype=torch.int64))
+            self.merge_extend(torch.tensor(16, dtype=torch.int64))
         edge_valid = self.sample_extend()
         self.apply_sampled(edge_valid)
         if update_original and DEBUG:
@@ -194,16 +202,15 @@ class MultiLayerTetra(nn.Module):
                 write_file.write("updating: cell "+str(self.cell_offset[0].item())+" edge "+str(self.edge_offset[0].item())+" point "+str(self.point_offset[0].item())+".\n")
 
     def forward(self, xyz, use_extend=True):
-        cells, inside_cell = self.search_layer_0(xyz)
+        cells = self.search_layer_0(xyz)
         for i in range(1, self.max_layer_num-1):
             cells = self.search_layer_i(xyz, cells, i)
         cell_id = cells["cell_id"]
         point_id = self.point_index[cell_id, :]
         cells["feature"] = self.field[point_id, :]
         feature = interpolate_field_value(xyz, cells)
-        feature = torch.where(inside_cell[:,None], feature, 0)
-        importance = torch.where(inside_cell, torch.max(self.importance[cell_id, :], axis=-1).values, 0)
-        cell_id = torch.where(inside_cell, cell_id, 0)
+
+        importance = torch.max(self.importance[cell_id, :], axis=-1).values
         if not use_extend:
             return feature, None, cell_id, importance
         else:
@@ -213,7 +220,7 @@ class MultiLayerTetra(nn.Module):
             cells["feature"] = self.field[extend_point_id, :]
             extend_feature = interpolate_field_value(xyz, cells)
             #? possibly not necessary to pass all the three values all the time?
-            return feature, extend_feature, cell_id, importance
+            return feature, extend_feature, cell_id, extend_cell_id, importance
 
     @torch.inference_mode()
     def reset_importance(self):
@@ -221,7 +228,136 @@ class MultiLayerTetra(nn.Module):
         self.importance[:count, :] = torch.zeros_like(self.importance[:count, :]).uniform_(0,1)
 
     @torch.inference_mode()
-    def update_importance(self, related_cell_index, importance_value, update_rate=0.99):
+    def global_importance_annealing_callback(self, step, start_step=0):
+        if step < start_step:
+            return
+        #? global importance annealing may have other period, and other ratio
+        anneal_round = step // 250
+        valid_cell_count = self.cell_offset[0]
+        anneal_flag = (anneal_round % torch.pow(2, self.activation_layer[:valid_cell_count]) == 0)
+        self.importance[:valid_cell_count, :] = torch.where(anneal_flag[:,None].expand(-1,6), 
+                                                            0.8*self.importance[:valid_cell_count, :],
+                                                            self.importance[:valid_cell_count, :])
+
+
+    @torch.inference_mode()
+    def update_importance_from_result(self, result, step, start_step):
+        '''
+        result = {'cell_id':..., 'extend_cell_id':...,
+                  'weights_original':..., 'rgb_original':..., 
+                  'weights_extend':..., 'rgb_extend':..., 
+                  'pred_rgb':..., 'gt_rgb':...}
+        '''
+
+        cell_index = result['cell_id']
+        extend_cell_index = result['extend_cell_id']
+        weights_original = result['weights_original']
+        rgb_original = result['rgb_original']
+        weights_extend = result['weights_extend']
+        rgb_extend = result['rgb_extend']
+        pred_rgb = result['pred_rgb']
+        gt_rgb = result['gt_rgb']
+        density = result['density'].squeeze(-1)
+
+        update_weights_momentum = torch.max(weights_original) + torch.max(weights_extend) + 1e-8
+        if self.weights_momentum[0] == 0:
+            self.weights_momentum[0] = update_weights_momentum
+        else:
+            self.weights_momentum[0] = 0.99*self.weights_momentum[0] + \
+                                    0.01*update_weights_momentum
+
+
+        raw_rgb_ratio_diff = rgb_extend - rgb_original
+        raw_rgb_ratio_diff_2 = torch.sum(raw_rgb_ratio_diff*raw_rgb_ratio_diff, axis=-1)
+        raw_wei_ratio_diff = (weights_extend - weights_original)/self.weights_momentum[0]
+        raw_wei_ratio_diff_2 = torch.abs(raw_wei_ratio_diff*raw_wei_ratio_diff).squeeze(-1)
+        extend_diff_2 = raw_rgb_ratio_diff_2 * raw_wei_ratio_diff_2
+
+        acc_rgb_diff_2 = torch.sum((pred_rgb-gt_rgb)*(pred_rgb-gt_rgb), axis=-1)[:, None].expand(extend_diff_2.shape)
+
+        raw_wei_ratio = (1-torch.exp(-density/160)) / self.weights_momentum[0]
+
+        importance_ingredients = {"acc_rgb_diff_2":acc_rgb_diff_2, "extend_diff_2":extend_diff_2, 
+                                    "extend_cell_index":extend_cell_index, "raw_wei_ratio":raw_wei_ratio}
+        use_cov = (step < 12000)
+        reordered_cell_index, reordered_importance_value, reordered_importance_power \
+                    = self.calculate_importance_with_reordering(cell_index, importance_ingredients, use_cov=use_cov)
+        
+        # if not started yet, only update importance_momentum. May cause /0 error if not.
+        # (because importance_momentum will be 0 for a relatively long time)
+        only_momentum = (step < start_step)
+        if only_momentum:
+            return
+
+        self.update_importance(reordered_cell_index, reordered_importance_value, reordered_importance_power)
+
+    @torch.inference_mode()
+    def calculate_importance_with_reordering(self, related_cell_index, ingredients, momentum_update_rate=0.998, use_cov=False):
+        related_cell_index = related_cell_index.view(-1)
+        for ingredients_key in ingredients:
+            ingredients[ingredients_key] = ingredients[ingredients_key].reshape(-1)
+        cell_count = related_cell_index.shape[0]
+
+        #* remove duplicates
+        sorted_related_cell_index, sorted_indices = torch.sort(related_cell_index)
+
+        for ingredients_key in ingredients:
+            ingredients[ingredients_key] = ingredients[ingredients_key][sorted_indices]
+
+        cell_changing_nohead = (sorted_related_cell_index[1:] - sorted_related_cell_index[:-1] != 0).long()
+        head = torch.tensor([1], dtype=torch.int64, device=cell_changing_nohead.device)
+        cell_changing = torch.concatenate([head, cell_changing_nohead])
+
+        leading_cell = torch.concatenate([torch.nonzero(cell_changing).view(-1), cell_count*head])
+        float_head = torch.tensor([0], dtype=torch.float32, device=cell_changing_nohead.device)
+        
+        sorted_importance_value = ingredients["acc_rgb_diff_2"] * ingredients["extend_diff_2"]
+        #* the average below should be a powered weight aware of importance.
+        # for example, if importance to update is too small, it should not count! it might be a surface cell, just obstacled in some camera views. for unimportant cells, just wait for the periodic global annealing to remove it.
+        sorted_importance_power = sorted_importance_value/(1+sorted_importance_value)
+        sorted_power_cumsum = torch.concatenate([float_head, torch.cumsum(sorted_importance_power, 0)])
+
+        #* calculate average and update
+        sorted_importance_cumsum = torch.concatenate([float_head, \
+                            torch.cumsum(sorted_importance_value*sorted_importance_power, 0)])
+        groupby_sum = sorted_importance_cumsum[leading_cell[1:]] - sorted_importance_cumsum[leading_cell[:-1]]
+        groupby_powersum = sorted_power_cumsum[leading_cell[1:]] - sorted_power_cumsum[leading_cell[:-1]] + 1e-10
+        groupby_average = groupby_sum / groupby_powersum
+        reordered_cell_index = sorted_related_cell_index[leading_cell[:-1]]
+
+
+        #* calculate covariance between extend cell index and weights. This is to encorage the cells to slice off empty areas.
+        sorted_cellid_wei_prod_cumsum = torch.concatenate([float_head, \
+                                         torch.cumsum(ingredients["extend_cell_index"]*ingredients["raw_wei_ratio"], 0)])
+        sorted_extend_cell_index_cumsum = torch.concatenate([float_head, torch.cumsum(ingredients["extend_cell_index"], 0).float()])
+        sorted_raw_wei_ratio_cumsum = torch.concatenate([float_head, torch.cumsum(ingredients["raw_wei_ratio"], 0)])
+
+        sorted_cellid_wei_prod_sum = sorted_cellid_wei_prod_cumsum[leading_cell[1:]] - \
+                                      sorted_cellid_wei_prod_cumsum[leading_cell[:-1]]
+        sorted_extend_cell_index_sum = sorted_extend_cell_index_cumsum[leading_cell[1:]] - \
+                                        sorted_extend_cell_index_cumsum[leading_cell[:-1]]
+        sorted_raw_wei_ratio_sum = sorted_raw_wei_ratio_cumsum[leading_cell[1:]] - \
+                                    sorted_raw_wei_ratio_cumsum[leading_cell[:-1]]
+        sorted_cell_count = leading_cell[1:] - leading_cell[:-1]
+        cellid_n_wei_cov = sorted_cellid_wei_prod_sum / sorted_cell_count - \
+                            sorted_extend_cell_index_sum*sorted_raw_wei_ratio_sum / sorted_cell_count**2
+        
+        #* calculate the final importance value
+        if use_cov:
+            reordered_importance_value = cellid_n_wei_cov*cellid_n_wei_cov
+        else:
+            reordered_importance_value = groupby_average
+
+        #* update importance momentum
+        importance_max = torch.max(sorted_importance_value)
+        if self.importance_momentum[0] == 0:
+            self.importance_momentum[0] = importance_max
+        else:
+            self.importance_momentum[0] = self.importance_momentum[0]*momentum_update_rate + importance_max*(1-momentum_update_rate)
+        return reordered_cell_index, reordered_importance_value, groupby_powersum
+
+    @torch.inference_mode()
+    def update_importance(self, related_cell_index, importance_value, importance_power, update_rate=0.999):
         '''
         a bunch of cells at `related_cell_index` are affected by a training process, and they need to update their importance values. An affected cell is a leaf cell, the importance_value stands for the difference between the cell itself and the subcells created by `sample_extend`. The value will be applied on the cut edge of the cell(self.child_cut).
 
@@ -230,45 +366,49 @@ class MultiLayerTetra(nn.Module):
         related_cell_index: Tensor[cell_num]
         importance_value: Tensor[cell_num]
         '''
-        related_cell_index = related_cell_index.view(-1)
-        importance_value = importance_value.view(-1)
-        cell_count = related_cell_index.shape[0]
-
-        #* remove duplicates
-        sorted_related_cell_index, sorted_indices = torch.sort(related_cell_index)
-        sorted_importance_value = importance_value[sorted_related_cell_index]
-
-        cell_changing_nohead = (sorted_related_cell_index[1:] - sorted_related_cell_index[:-1] != 0).long()
-        head = torch.tensor([1], dtype=torch.int64, device=cell_changing_nohead.device)
-        cell_changing = torch.concatenate([head, cell_changing_nohead])
-
-        leading_cell = torch.concatenate([torch.nonzero(cell_changing).view(-1), cell_count*head])
-        float_head = torch.tensor([0], dtype=torch.float32, device=cell_changing_nohead.device)
-        sorted_importance_cumsum = torch.concatenate([float_head, torch.cumsum(sorted_importance_value, 0)])
-
-        #* the average below should be a powered weight aware of importance.
-        # for example, if importance to update is too small, it should not count! it might be a surface cell, just obstacled in some camera views. for unimportant cells, just wait for the periodic global annealing to remove it.
-        sorted_importance_power = 1 - 1/(1+sorted_importance_value)
-        sorted_power_cumsum = torch.concatenate([float_head, torch.cumsum(sorted_importance_power, 0)])
-
-        #* calculate average and update
-        groupby_sum = sorted_importance_cumsum[leading_cell[1:]] - sorted_importance_cumsum[leading_cell[:-1]]
-        groupby_count = sorted_power_cumsum[leading_cell[1:]] - sorted_power_cumsum[leading_cell[:-1]] + 1e-4
-        groupby_average = groupby_sum / groupby_count
-        groupby_cell_index = sorted_related_cell_index[leading_cell[:-1]]
+        #* normalize importance_value
+        importance_value = importance_value / self.importance_momentum
 
         #* find which edge_incell need to be updated
         # optional: check whether cells are sampled for extension (if not, `importance_value` will usually be 0 for them)
-        groupby_child_cut = self.child_cut[groupby_cell_index, :]
-        groupby_edge_idincell = self.edge_idincell_from_point(groupby_child_cut)
+        related_child_cut = self.child_cut[related_cell_index, :]
+        related_edge_idincell = self.edge_idincell_from_point(related_child_cut)
         # groupby_edge_valid = (groupby_edge_idincell != -1)
 
-        groupby_update_rate = torch.pow(update_rate, groupby_count)
-        groupby_importance_last = self.importance[groupby_cell_index, groupby_edge_idincell]
-        groupby_importance_new = groupby_importance_last*groupby_update_rate + groupby_average*(1-groupby_update_rate)
+        cellwise_update_rate = torch.pow(update_rate, importance_power)
+        cellwise_importance_last = self.importance[related_cell_index, related_edge_idincell]
+        cellwise_importance_new = cellwise_importance_last*cellwise_update_rate + importance_value*(1-cellwise_update_rate)
 
         #* update the importance
-        self.importance[groupby_cell_index, groupby_edge_idincell] = groupby_importance_new
+        self.importance[related_cell_index, related_edge_idincell] = cellwise_importance_new
+        
+        if DEBUG and self.step % 100 == 0:
+            with open(DEBUG_file, "a") as write_file:
+                sample_id = self.step // 100 * 37831 % related_cell_index.shape[0]
+                update_str = "cell " + str(related_cell_index[sample_id].item()) + \
+                            " is updating its edge " + str(related_edge_idincell[sample_id].item()) + \
+                            " with new value " + str(cellwise_importance_new[sample_id].item()) + \
+                            " and momentum " + str(self.importance_momentum[0].item()) + "\n"
+                write_file.write(update_str)
+
+        importance_nan = torch.isnan(cellwise_importance_new)
+        if torch.any(importance_nan):
+            importance_nan_id = torch.nonzero(importance_nan)
+            importance_nan_cell_index = related_cell_index[importance_nan_id.view(-1)[0]]
+            nan_importance_value = importance_value[importance_nan_id.view(-1)[0]]
+            nan_importance_power = importance_power[importance_nan_id.view(-1)[0]]
+            nan_cellwise_update_rate = cellwise_update_rate[importance_nan_id.view(-1)[0]]
+            with open(DEBUG_file, "a") as write_file:
+                update_str = "updating nan! cell " + str(importance_nan_cell_index.item()) + \
+                            " with new value nan! actually, " + str(importance_nan_id.shape[0]) + \
+                            " different cells are getting nan! it happens with importance_value " + str(nan_importance_value.item()) +\
+                            " and importance_power " + str(nan_importance_power.item()) + \
+                            " and cellwise_update_rate " + str(nan_cellwise_update_rate.item()) + \
+                            ". Note that momentum is " + str(self.importance_momentum[0].item()) + "\n"
+                write_file.write("================== UPDATE IMPORTANCE =================\n")
+                write_file.write(update_str)
+                write_file.write("======================================================\n")
+            assert 0
 
     # ! detailed function definition starts here
     def organize_layer_0(self):
@@ -292,16 +432,10 @@ class MultiLayerTetra(nn.Module):
         cut = self.child_cut[:1, :].view(1, 2).expand(sample_size, 2)
         activation_layer = self.activation_layer[:1].expand(sample_size)
 
-        inside_cell = torch.all(to_canonical(xyz, cell_xyz)>=0, axis=-1)
-        inside_box_lower = torch.all(xyz>=0.25, axis=-1)
-        inside_box_higher = torch.all(xyz<=0.75, axis=-1)
-        inside_box = torch.logical_and(inside_box_higher, inside_box_lower)
-        inside_cell = torch.logical_and(inside_cell, inside_box)
-
         return {"cell_id":          cell_id, 
                 "xyz":              cell_xyz, 
                 "cut":              cut, 
-                "activation_layer": activation_layer}, inside_cell
+                "activation_layer": activation_layer}
 
     def search_layer_i(self, xyz, parent_cells, i):
         sample_num = xyz.shape[0]
@@ -596,11 +730,13 @@ class MultiLayerTetra(nn.Module):
         # t = 0.75
         # return torch.tensor([[u,u,u], [u,u,t], [u,t,u], [t,u,u]], dtype=torch.float32, device=aabb.device)
         return torch.tensor([[-0.25,0.25,1.5], [-0.25,0.25,-1.5], [2.75,0.25,0], [0.5,3.25,0]])
+        # return torch.tensor([[-1,0,2.5], [-1,0,-3.5], [5,0,-0.5], [0.5,6,-0.5]])
 
     def is_leaf_cell(self):
         is_leaf_candidate = torch.logical_or(self.activation_layer>=self.max_layer_num, self.activation_layer==-1)
         is_original_cell = (torch.arange(self.max_cell_count, device=self.activation_layer.device) < self.cell_offset[0])
-        is_leaf_cell = torch.logical_and(is_leaf_candidate, is_original_cell)
+        not_reach_max_layer = (self.layer < self.max_layer_num-1)
+        is_leaf_cell = torch.logical_and(torch.logical_and(is_leaf_candidate, is_original_cell), not_reach_max_layer)
         return is_leaf_cell
 
     def choose_edge(self, edge_valid, cell_edge_num, cell_chosen):
@@ -796,7 +932,7 @@ class MultiLayerTetra(nn.Module):
     def sort_for_edge(self):
         #? still lack checking for invalid slots, that is, for `index >= self.max_cell_count`, we still have to manually set their `sync_to_trigger` values to a preset large constant value.
         #? memorize to change self.syncing_sort to False after subdivision
-        if not self.edge_sorted:
+        if not self.edge_sorted or self.sorted_edge_offset == None:
             sorted_edge_index, self.cell2sortededge_map = torch.sort(self.edge_index.view(-1), descending=True)
             self.sorted_edge_index = sorted_edge_index
             offset = torch.nonzero(sorted_edge_index[1:] - sorted_edge_index[:-1]).view(-1)
@@ -823,7 +959,7 @@ class FlexNerfField(Field):
         aabb,
         min_resolution: int = 4,
         feature_dim: int = 32,
-        max_layer_num: int = 20,
+        max_layer_num: int = 40,
         max_point_per_layer: int = 1e5,
         num_layers: int = 3,
         hidden_dim: int = 128,
@@ -834,7 +970,6 @@ class FlexNerfField(Field):
         implementation: Literal["tcnn", "torch"] = "tcnn",
     ) -> None:
         super().__init__()
-        self.step = 0
         self.register_buffer("aabb", aabb)
         self.feature_dim = feature_dim
 
@@ -884,7 +1019,7 @@ class FlexNerfField(Field):
             self._sample_locations.requires_grad = True
         positions_flat = positions.view(-1, 3)
 
-        feature, extend_feature, cell_id, importance = self.multi_layer_tetra(positions_flat, use_extend=True)
+        feature, extend_feature, cell_id, extend_cell_id, importance = self.multi_layer_tetra(positions_flat, use_extend=True)
 
         def feature2out(input_feature):
             h = self.mlp_base_mlp(input_feature).view(*ray_samples.frustums.shape, -1)
@@ -902,9 +1037,15 @@ class FlexNerfField(Field):
         density, density_embedding = feature2out(feature)
         extend_density, extend_density_embedding = feature2out(extend_feature)
         cell_id = cell_id.view(*ray_samples.frustums.shape, -1)
+        extend_cell_id = extend_cell_id.view(*ray_samples.frustums.shape, -1)
         importance = importance.view(*ray_samples.frustums.shape, -1)
 
-        return density, density_embedding, extend_density, extend_density_embedding, cell_id, importance
+        if FILTER_OUT_BOX:
+            mask = ((positions > 0.25) & (positions < 0.75)).all(dim=-1).view(*ray_samples.frustums.shape, -1)
+        else:
+            mask = None
+
+        return density, density_embedding, extend_density, extend_density_embedding, cell_id, extend_cell_id, importance, mask
 
     def get_outputs(
         self, ray_samples: RaySamples, density_embedding: Optional[Tensor] = None
@@ -917,7 +1058,6 @@ class FlexNerfField(Field):
         directions = get_normalized_directions(ray_samples.frustums.directions)
         directions_flat = directions.view(-1, 3)
         d = self.direction_encoding(directions_flat)
-        d = torch.zeros_like(d)
 
         outputs_shape = ray_samples.frustums.directions.shape[:-1]
 
@@ -941,15 +1081,28 @@ class FlexNerfField(Field):
         """
         density, density_embedding, \
             extend_density, extend_density_embedding, \
-            cell_id, importance = self.get_density(ray_samples)
+            cell_id, extend_cell_id, importance, mask = self.get_density(ray_samples)
 
-        field_outputs = self.get_outputs(ray_samples, density_embedding=density_embedding)
-        field_outputs[FieldHeadNames.DENSITY] = density  # type: ignore
-        field_outputs[FieldHeadNames.CELLID] = cell_id
-        field_outputs[FieldHeadNames.IMPORTANCE] = importance
+        if FILTER_OUT_BOX:
+            field_outputs = self.get_outputs(ray_samples, density_embedding=density_embedding)
+            field_outputs[FieldHeadNames.DENSITY] = torch.where(mask, density, 0)  # type: ignore
+            field_outputs[FieldHeadNames.CELLID] = torch.where(mask, cell_id, 0)
+            field_outputs[FieldHeadNames.IMPORTANCE] = torch.where(mask, importance, 0)
+            field_outputs[FieldHeadNames.RGB] = torch.where(mask.expand(-1,-1,3), field_outputs[FieldHeadNames.RGB], 0)
 
-        extend_field_outputs = self.get_outputs(ray_samples, density_embedding=extend_density_embedding)
-        extend_field_outputs[FieldHeadNames.DENSITY] = extend_density
+            extend_field_outputs = self.get_outputs(ray_samples, density_embedding=extend_density_embedding)
+            extend_field_outputs[FieldHeadNames.DENSITY] = torch.where(mask, extend_density, 0)
+            extend_field_outputs[FieldHeadNames.RGB] = torch.where(mask.expand(-1,-1,3), extend_field_outputs[FieldHeadNames.RGB], 0)
+            extend_field_outputs[FieldHeadNames.CELLID] = torch.where(mask.expand(-1,-1,3), extend_cell_id, 0)
+        else:
+            field_outputs = self.get_outputs(ray_samples, density_embedding=density_embedding)
+            field_outputs[FieldHeadNames.DENSITY] = density  # type: ignore
+            field_outputs[FieldHeadNames.CELLID] = cell_id
+            field_outputs[FieldHeadNames.IMPORTANCE] = importance
+
+            extend_field_outputs = self.get_outputs(ray_samples, density_embedding=extend_density_embedding)
+            extend_field_outputs[FieldHeadNames.DENSITY] = extend_density
+            extend_field_outputs[FieldHeadNames.CELLID] = extend_cell_id
 
         return field_outputs, extend_field_outputs
 
@@ -961,7 +1114,8 @@ class FlexNerfField(Field):
         rays_d = torch.tensor([0.85, -0.6, 0.6]).to(device)
         xyz = rays_o[None, :] + torch.linspace(0,1,401).to(device)[112:, None]*rays_d[None, :]
         feature, extend_feature, cell_id, importance = self.multi_layer_tetra.forward(xyz)
-        print(cell_id)
-        print(feature[:, :2])
+        with open(DEBUG_file, "a") as write_file:
+            write_file.write(str(cell_id))
+            write_file.write(str(feature[:, :2]))
 
         assert 0
