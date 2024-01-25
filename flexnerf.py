@@ -41,7 +41,7 @@ from nerfstudio.model_components.losses import (
     pred_normal_loss,
     scale_gradients_by_distance_squared,
 )
-from nerfstudio.model_components.ray_samplers import ProposalNetworkSampler, UniformSampler, UniformLinDispPiecewiseSampler
+from nerfstudio.model_components.ray_samplers import ProposalNetworkSampler, UniformSampler, UniformLinDispPiecewiseSampler, PDFSampler
 from nerfstudio.model_components.renderers import AccumulationRenderer, DepthRenderer, NormalsRenderer, RGBRenderer
 from nerfstudio.model_components.scene_colliders import NearFarCollider
 from nerfstudio.model_components.shaders import NormalsShader
@@ -64,7 +64,7 @@ class FlexNeRFModelConfig(ModelConfig):
     """How far along the ray to start sampling."""
     far_plane: float = 2
     """How far along the ray to stop sampling."""
-    background_color: Literal["random", "last_sample", "black", "white"] = "last_sample"
+    background_color: Literal["random", "last_sample", "black", "white"] = "black"
     """Whether to randomize the background color."""
     hidden_dim: int = 64
     """Dimension of hidden layers"""
@@ -84,8 +84,10 @@ class FlexNeRFModelConfig(ModelConfig):
     """How many hashgrid features per level"""
     num_proposal_samples_per_ray: Tuple[int, ...] = (256, 96)
     """Number of samples per ray for each proposal network."""
-    num_nerf_samples_per_ray: int = 48
-    """Number of samples per ray for the nerf network."""
+    num_coarse_samples: int = 64
+    """Number of samples in coarse field evaluation"""
+    num_importance_samples: int = 128
+    """Number of samples in fine field evaluation"""
     proposal_update_every: int = 5
     """Sample every n steps after the warmup"""
     proposal_warmup: int = 5000
@@ -154,7 +156,8 @@ class FlexNeRFModel(Model):
         )
 
         # Samplers
-        self.sampler_uniform = UniformSampler(num_samples=self.config.num_nerf_samples_per_ray)
+        self.sampler_uniform = UniformSampler(num_samples=self.config.num_coarse_samples)
+        self.sampler_pdf = PDFSampler(num_samples=self.config.num_importance_samples)
 
         # Collider
         self.collider = NearFarCollider(near_plane=self.config.near_plane, far_plane=self.config.far_plane)
@@ -181,7 +184,11 @@ class FlexNeRFModel(Model):
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
         param_groups = {}
-        param_groups["fields"] = list(self.field.parameters())
+        multi_layer_feature = self.field.multi_layer_tetra.parameters()
+        multi_layer_feature_id = list(map(id, multi_layer_feature))
+        rest_params = filter(lambda x:id(x) not in multi_layer_feature_id, self.field.parameters())
+        param_groups["field_features"] = self.field.multi_layer_tetra.parameters()
+        param_groups["field_network"] = rest_params
         return param_groups
 
     def get_training_callbacks(
@@ -190,7 +197,7 @@ class FlexNeRFModel(Model):
         callbacks = []
         kwargs_dict = {"result": self.result}
         #? should be put into config
-        importance_profile_start_step = 2000
+        importance_profile_start_step = 6400
         update_importance_callback = TrainingCallback(
                     where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
                     update_every_num_iters=1,
@@ -198,7 +205,6 @@ class FlexNeRFModel(Model):
                                 start_step=importance_profile_start_step),
                     kwargs=kwargs_dict,
                 )
-            )
 
         global_annealing_callback = TrainingCallback(
                     where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
@@ -216,11 +222,11 @@ class FlexNeRFModel(Model):
 
         true_refine_callback = TrainingCallback(
                     where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
-                    update_every_num_iters=1000,
+                    update_every_num_iters=3200,
                     func=partial(self.field.multi_layer_tetra.refine_samples, update_original=True,
                                 start_step=importance_profile_start_step),
                 )
-                
+
         def update_step(step):
             self.field.multi_layer_tetra.step = step
         update_step_callback = TrainingCallback(
@@ -229,6 +235,19 @@ class FlexNeRFModel(Model):
             func=update_step,
         )
         
+        # temp_debug
+        def check_consistency(step):
+            if step == 12002:
+                self.temp_storage = self.field.multi_layer_tetra.field[:21, :].clone()
+            if step > 12010:
+                assert torch.all(self.temp_storage == self.field.multi_layer_tetra.field[:21,:])
+        check_consistency_callback = TrainingCallback(
+            where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
+            update_every_num_iters=1,
+            func=check_consistency,
+        )
+
+        # callbacks.append(check_consistency_callback)
         callbacks.append(update_importance_callback)
         callbacks.append(global_annealing_callback)
         callbacks.append(false_refine_callback)
@@ -238,13 +257,20 @@ class FlexNeRFModel(Model):
 
     def get_outputs(self, ray_bundle: RayBundle):
         ray_samples: RaySamples
-        ray_samples = self.sampler_uniform(ray_bundle)
+        ray_samples_coarse = self.sampler_uniform(ray_bundle)
+        field_outputs_coarse, extend_field_outputs_coarse = self.field.forward(ray_samples_coarse)
+        weights_coarse = ray_samples_coarse.get_weights(field_outputs_coarse[FieldHeadNames.DENSITY])
+        del field_outputs_coarse
+        del extend_field_outputs_coarse
+        ray_samples = self.sampler_pdf(ray_bundle, ray_samples_coarse, weights_coarse)
+
         field_outputs, extend_field_outputs = self.field.forward(ray_samples)
+
         if self.config.use_gradient_scaling:
             field_outputs = scale_gradients_by_distance_squared(field_outputs, ray_samples)
             extend_field_outputs = scale_gradients_by_distance_squared(extend_field_outputs, ray_samples)
 
-        weights = ray_samples.get_weights(field_outputs[FieldHeadNames.DENSITY])
+        weights, transmittance = ray_samples.get_weights(field_outputs[FieldHeadNames.DENSITY], weights_only=False)
 
         rgb = self.renderer_rgb(rgb=field_outputs[FieldHeadNames.RGB], weights=weights, background_color="black")
         if DEBUG:
@@ -296,23 +322,26 @@ class FlexNeRFModel(Model):
             importance_rgb_raw, cellid_rgb_raw = importance2density_n_rgb(importance_value, cell_id)
 
         # update self.result for callbacks
-        self.result["cell_id"] = cell_id
-        self.result["extend_cell_id"] = extend_cell_id
-        self.result["weights_original"] = weights
-        self.result["rgb_original"] = field_outputs[FieldHeadNames.RGB]
-        self.result["weights_extend"] = weights_extend
-        self.result["rgb_extend"] = extend_field_outputs[FieldHeadNames.RGB]
-        self.result["density"] = field_outputs[FieldHeadNames.DENSITY]
+        with torch.inference_mode():
+            self.result["cell_id"] = cell_id
+            self.result["extend_cell_id"] = extend_cell_id
+            self.result["weights_original"] = weights
+            self.result["rgb_original"] = field_outputs[FieldHeadNames.RGB]
+            self.result["weights_extend"] = weights_extend
+            self.result["rgb_extend"] = extend_field_outputs[FieldHeadNames.RGB]
+            self.result["transmittance"] = transmittance
 
         with torch.inference_mode():
-            slice_index = 65
+            # slice_index = 65
+            slice_index = torch.max(ray_samples.frustums.starts > 0.8125, axis=1).indices.view(-1)
+            arange_index = torch.arange(slice_index.shape[0], device=slice_index.device)
             slice_density = field_outputs[FieldHeadNames.DENSITY].clone()
-            slice_density[:, slice_index] = 10000
+            slice_density[arange_index, slice_index] = 10000
             slice_cellid_rgb_raw = field_outputs[FieldHeadNames.RGB].clone()
-            slice_cellid_rgb_raw[:, slice_index, :] = cellid_rgb_raw[:, slice_index, :]
+            slice_cellid_rgb_raw[arange_index, slice_index, :] = cellid_rgb_raw[arange_index, slice_index, :]
             weights_slice = ray_samples.get_weights(slice_density)
             weights_slice_clear = torch.zeros_like(weights_slice)
-            weights_slice_clear[:, slice_index] = 1
+            weights_slice_clear[arange_index, slice_index] = 1
             rgb_cellid_slice = self.renderer_rgb(rgb=slice_cellid_rgb_raw, weights=weights_slice)
             rgb_importance_slice_clear = self.renderer_rgb(rgb=importance_rgb_raw, weights=weights_slice_clear)
             rgb_cellid_slice_clear = self.renderer_rgb(rgb=slice_cellid_rgb_raw, weights=weights_slice_clear)
@@ -326,7 +355,7 @@ class FlexNeRFModel(Model):
             "importance_slice_clear": rgb_importance_slice_clear,
             "cellid_slice_clear": rgb_cellid_slice_clear,
             "cellid_slice": rgb_cellid_slice,
-            "cellid_onobj": rgb_cellid_onobj
+            "cellid_onobj": rgb_cellid_onobj,
         }
 
         return outputs
@@ -348,25 +377,6 @@ class FlexNeRFModel(Model):
             pred_accumulation=outputs["accumulation"],
             gt_image=image,
         )
-        if DEBUG:
-            pred_rgb_nan = torch.isnan(pred_rgb)
-            gt_rgb_nan = torch.isnan(gt_rgb)
-            if torch.any(pred_rgb_nan) or torch.any(gt_rgb_nan):
-                if torch.any(pred_rgb_nan):
-                    sample_id = torch.nonzero(torch.any(torch.isnan(pred_rgb), axis=-1)).view(-1)[0]
-                if torch.any(gt_rgb_nan):
-                    sample_id = torch.nonzero(torch.any(torch.isnan(gt_rgb), axis=-1)).view(-1)[0]
-                with open(DEBUG_file, "a") as write_file:
-                    write_file.write("====================== image =========================\n")
-                    write_file.write(str(image[sample_id]))
-                    write_file.write("\n====================== gt_rgb ========================\n")
-                    write_file.write(str(gt_rgb[sample_id]))
-                    write_file.write("\n====================== pred_rgb ======================\n")
-                    write_file.write(str(pred_rgb[sample_id]))
-                    write_file.write("\n====================== out_rgb =======================\n")
-                    write_file.write(str(outputs["rgb"][sample_id]))
-                    write_file.write("\n======================================================")
-                assert 0
 
         extend_pred_rgb, extend_gt_rgb = self.renderer_rgb.blend_background_for_loss_computation(
             pred_image=outputs["rgb_extend"],
