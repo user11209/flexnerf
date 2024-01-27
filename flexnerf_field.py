@@ -223,23 +223,18 @@ class MultiLayerTetra(nn.Module):
 
     def forward(self, xyz, use_extend=True):
         cells = self.search_layer_0(xyz)
-        old_cell_id = cells["cell_id"].clone()
+        self.gather_info_from_cell_id(None, cells)
+        feature = interpolate_field_value(xyz, cells)
         for i in range(1, self.max_layer_num-1):
-            #* this last_layer_cell_id / next_layer_cell_id / old_cell_id thing is to seperate the newly merged cells and the old original cells. it might be important for loss stability.
-            last_layer_cell_id = cells["cell_id"]
-
+            update_mask = (cells["activation_layer"] == i)
             cells = self.search_layer_i(xyz, cells, i)
+            self.gather_info_from_cell_id(None, cells)
+            additional_feature = interpolate_field_value(xyz, cells).masked_scatter(not_update_mask, )
+            feature += additional_feature
 
-            next_layer_cell_id = cells["cell_id"]
-            old_cell_id.masked_scatter(next_layer_cell_id >= self.cell_offset[1], last_layer_cell_id)
         cell_id = cells["cell_id"]
         self.gather_info_from_cell_id(cell_id, cells)
         feature = interpolate_field_value(xyz, cells)
-
-        old_cell_id.masked_scatter(old_cell_id == 0, cell_id)
-        old_cells = {}
-        self.gather_info_from_cell_id(old_cell_id, old_cells)
-        old_feature = interpolate_field_value(xyz, old_cells)
 
         importance = torch.max(self.inter_level_importance[cell_id, :], axis=-1).values
         if not use_extend:
@@ -251,7 +246,7 @@ class MultiLayerTetra(nn.Module):
             cells["feature"] = self.field[extend_point_id, :]
             extend_feature = interpolate_field_value(xyz, cells)
             #? possibly not necessary to pass all the three values all the time?
-            return feature, extend_feature, old_feature, cell_id, extend_cell_id, importance
+            return feature, extend_feature, cell_id, extend_cell_id, importance
 
     def gather_info_from_cell_id(self, cell_id, cells_dict):
         if cell_id == None:
@@ -780,7 +775,8 @@ class MultiLayerTetra(nn.Module):
 
         point_start = self.point_offset[0]
         point_end = self.point_offset[0] + one_cell_per_point.shape[0]
-        self.field[point_start:point_end, :] = child_field
+        # self.field[point_start:point_end, :] = child_field
+        self.field[point_start:point_end, :] = 0
         self.xyz[point_start:point_end, :] = child_xyz
 
         # **change overall extend label
@@ -1083,7 +1079,7 @@ class FlexNerfField(Field):
             self._sample_locations.requires_grad = True
         positions_flat = positions.view(-1, 3)
 
-        feature, extend_feature, old_feature, cell_id, extend_cell_id, importance = self.multi_layer_tetra(positions_flat, use_extend=True)
+        feature, extend_feature, cell_id, extend_cell_id, importance = self.multi_layer_tetra(positions_flat, use_extend=True)
 
         def feature2out(input_feature):
             h = self.mlp_base_mlp(input_feature).view(*ray_samples.frustums.shape, -1)
@@ -1100,7 +1096,6 @@ class FlexNerfField(Field):
 
         density, density_embedding = feature2out(feature)
         extend_density, extend_density_embedding = feature2out(extend_feature)
-        old_density, old_density_embedding = feature2out(old_feature)
         cell_id = cell_id.view(*ray_samples.frustums.shape, -1)
         extend_cell_id = extend_cell_id.view(*ray_samples.frustums.shape, -1)
         importance = importance.view(*ray_samples.frustums.shape, -1)
@@ -1112,7 +1107,6 @@ class FlexNerfField(Field):
 
         return density, density_embedding, \
                 extend_density, extend_density_embedding, \
-                old_density, old_density_embedding, \
                 cell_id, extend_cell_id, importance, mask
 
     def get_outputs(
@@ -1149,7 +1143,6 @@ class FlexNerfField(Field):
         """
         density, density_embedding, \
             extend_density, extend_density_embedding, \
-            old_density, old_density_embedding, \
             cell_id, extend_cell_id, importance, mask = self.get_density(ray_samples)
 
         weight_lower_bound = 1e-7
@@ -1164,10 +1157,6 @@ class FlexNerfField(Field):
             extend_field_outputs[FieldHeadNames.DENSITY] = torch.where(mask, extend_density, 0) + weight_lower_bound
             extend_field_outputs[FieldHeadNames.RGB] = torch.where(mask.expand(-1,-1,3), extend_field_outputs[FieldHeadNames.RGB], 0)
             extend_field_outputs[FieldHeadNames.CELLID] = torch.where(mask.expand(-1,-1,3), extend_cell_id, 0)
-
-            old_field_outputs = self.get_outputs(ray_samples, density_embedding=old_density_embedding)
-            old_field_outputs[FieldHeadNames.DENSITY] = torch.where(mask, old_density, 0) + weight_lower_bound
-            old_field_outputs[FieldHeadNames.RGB] = torch.where(mask.expand(-1,-1,3), old_field_outputs[FieldHeadNames.RGB], 0)
         else:
             field_outputs = self.get_outputs(ray_samples, density_embedding=density_embedding)
             field_outputs[FieldHeadNames.DENSITY] = density + weight_lower_bound  # type: ignore
@@ -1178,11 +1167,7 @@ class FlexNerfField(Field):
             extend_field_outputs[FieldHeadNames.DENSITY] = extend_density + weight_lower_bound
             extend_field_outputs[FieldHeadNames.CELLID] = extend_cell_id
 
-            old_field_outputs = self.get_outputs(ray_samples, density_embedding=old_density_embedding)
-            old_field_outputs[FieldHeadNames.DENSITY] = old_density + weight_lower_bound
-            old_field_outputs[FieldHeadNames.CELLID] = old_cell_id
-
-        return field_outputs, extend_field_outputs, old_field_outputs
+        return field_outputs, extend_field_outputs
 
     def test_forward(self, step):
         if step == 0:
