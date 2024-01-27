@@ -223,33 +223,30 @@ class MultiLayerTetra(nn.Module):
 
     def forward(self, xyz, use_extend=True):
         cells = self.search_layer_0(xyz)
-        old_cell_id = cells["cell_id"].clone()
-        for i in range(1, self.max_layer_num-1):
-            #* this last_layer_cell_id / next_layer_cell_id / old_cell_id thing is to seperate the newly merged cells and the old original cells. it might be important for loss stability.
-            last_layer_cell_id = cells["cell_id"]
-
-            cells = self.search_layer_i(xyz, cells, i)
-
-            next_layer_cell_id = cells["cell_id"]
-            old_cell_id.masked_scatter(next_layer_cell_id >= self.cell_offset[1], last_layer_cell_id)
-        cell_id = cells["cell_id"]
-        self.gather_info_from_cell_id(cell_id, cells)
+        self.gather_info_from_cell_id(None, cells)
         feature = interpolate_field_value(xyz, cells)
+        old_feature = interpolate_field_value(xyz, cells)
+        for i in range(1, self.max_layer_num-1):
+            update_mask = (cells["activation_layer"] == i)
+            cells = self.search_layer_i(xyz, cells, i)
+            update_mask_old = torch.logical_and(update_mask, cells["cell_id"] < self.cell_offset[1])
 
-        old_cell_id.masked_scatter(old_cell_id == 0, cell_id)
-        old_cells = {}
-        self.gather_info_from_cell_id(old_cell_id, old_cells)
-        old_feature = interpolate_field_value(xyz, old_cells)
-
+            self.gather_info_from_cell_id(None, cells)
+            additional_feature = interpolate_field_value(xyz, cells)
+            feature += torch.where(update_mask, additional_feature, 0)
+            old_feature += torch.where(update_mask_old, additional_feature, 0)
+            
+        cell_id = cells["cell_id"]
         importance = torch.max(self.inter_level_importance[cell_id, :], axis=-1).values
         if not use_extend:
             return feature, None, cell_id, importance
         else:
             cells = self.search_extend(xyz, cells)
+            update_mask_extend = (cells["cell_id"] >= self.cell_offset[0])
             extend_cell_id = cells["cell_id"]
-            extend_point_id = self.point_index[extend_cell_id, :]
-            cells["feature"] = self.field[extend_point_id, :]
-            extend_feature = interpolate_field_value(xyz, cells)
+            self.gather_info_from_cell_id(None, cells)
+            additional_extend_feature = interpolate_field_value(xyz, cells)
+            extend_feature = feature + torch.where(update_mask_extend, additional_extend_feature, 0)
             #? possibly not necessary to pass all the three values all the time?
             return feature, extend_feature, old_feature, cell_id, extend_cell_id, importance
 
@@ -780,7 +777,8 @@ class MultiLayerTetra(nn.Module):
 
         point_start = self.point_offset[0]
         point_end = self.point_offset[0] + one_cell_per_point.shape[0]
-        self.field[point_start:point_end, :] = child_field
+        # self.field[point_start:point_end, :] = child_field
+        self.field[point_start:point_end, :] = 0
         self.xyz[point_start:point_end, :] = child_xyz
 
         # **change overall extend label
