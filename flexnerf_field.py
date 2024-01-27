@@ -118,7 +118,7 @@ class MultiLayerTetra(nn.Module):
         # !note: cells or points are continuously stored, thus they span a range of cell_offset[i]~cell_offset[i+1]
         #? this is currently not obeyed. all cells and points are not sorted, and we use cell_offset[-1] to find the range
         # **original** cells or points are continuously stored
-        self.register_buffer("cell_offset", torch.zeros(1, dtype=torch.int64))
+        self.register_buffer("cell_offset", torch.zeros(2, dtype=torch.int64))
         self.register_buffer("edge_offset", torch.zeros(1, dtype=torch.int64))
         self.register_buffer("point_offset", torch.zeros(1, dtype=torch.int64))
         # **extend** cells or points are continuously stored, 
@@ -202,14 +202,14 @@ class MultiLayerTetra(nn.Module):
 
         # !note: registering stop here, organize the first layer of tree and try sampling
         self.organize_layer_0()
-        self.refine_samples(0, update_original=False, start_step=0)
+        self.refine_samples(0, update_original=True, start_step=0)
         self.sorted_edge_offset = None
 
     @torch.inference_mode()
     def refine_samples(self, step, update_original=True, use_inter_level_importance=True, start_step=0):
-        if step < start_step or step > 50000:
+        if step != 0 and step < start_step or step > 50000:
             return
-        use_inter_level_importance = (step//3200%2 == 0)
+        use_inter_level_importance = (step//1600%2 == 0)
         self.importance = self.inter_level_importance if use_inter_level_importance else self.remove_empty_importance
         self.remove_last_sampled()
         # TODO: check boundaries, no to exceed the `max_??_count`, especially for sample_extend. Note, merge_extend lack 1 positional argument for that reason. temporarily set it to be 2. Note, this value means how many parent cells will be divided, so the actual increased cell number is at most twice the value
@@ -223,12 +223,23 @@ class MultiLayerTetra(nn.Module):
 
     def forward(self, xyz, use_extend=True):
         cells = self.search_layer_0(xyz)
+        old_cell_id = cells["cell_id"].clone()
         for i in range(1, self.max_layer_num-1):
+            #* this last_layer_cell_id / next_layer_cell_id / old_cell_id thing is to seperate the newly merged cells and the old original cells. it might be important for loss stability.
+            last_layer_cell_id = cells["cell_id"]
+
             cells = self.search_layer_i(xyz, cells, i)
+
+            next_layer_cell_id = cells["cell_id"]
+            old_cell_id.masked_scatter(next_layer_cell_id >= self.cell_offset[1], last_layer_cell_id)
         cell_id = cells["cell_id"]
-        point_id = self.point_index[cell_id, :]
-        cells["feature"] = self.field[point_id, :]
+        self.gather_info_from_cell_id(cell_id, cells)
         feature = interpolate_field_value(xyz, cells)
+
+        old_cell_id.masked_scatter(old_cell_id == 0, cell_id)
+        old_cells = {}
+        self.gather_info_from_cell_id(old_cell_id, old_cells)
+        old_feature = interpolate_field_value(xyz, old_cells)
 
         importance = torch.max(self.inter_level_importance[cell_id, :], axis=-1).values
         if not use_extend:
@@ -240,7 +251,21 @@ class MultiLayerTetra(nn.Module):
             cells["feature"] = self.field[extend_point_id, :]
             extend_feature = interpolate_field_value(xyz, cells)
             #? possibly not necessary to pass all the three values all the time?
-            return feature, extend_feature, cell_id, extend_cell_id, importance
+            return feature, extend_feature, old_feature, cell_id, extend_cell_id, importance
+
+    def gather_info_from_cell_id(self, cell_id, cells_dict):
+        if cell_id == None:
+            cell_id = cells_dict["cell_id"]
+        elif "cell_id" not in cells_dict:
+            cells_dict["cell_id"] = cell_id
+        point_id = self.point_index[cell_id, :]
+        if "xyz" not in cells_dict:
+            cells_dict["xyz"] = self.xyz[point_id, :]
+        if "feature" not in cells_dict:
+            cells_dict["feature"] = self.field[point_id, :]
+        if "cut" not in cells_dict:
+            cells_dict["cut"] = self.child_cut[cell_id, :]
+        return
 
     # @torch.inference_mode()
     # def reset_importance(self):
@@ -461,7 +486,7 @@ class MultiLayerTetra(nn.Module):
     def search_layer_0(self, xyz):
         sample_size = xyz.shape[0]
 
-        cell_id = torch.zeros(sample_size, dtype=torch.int32, device=xyz.device)
+        cell_id = torch.zeros(sample_size, dtype=torch.int64, device=xyz.device)
         cell_xyz = self.xyz[:4, :].view(1,4,3).expand(sample_size, 4, 3)
 
         cut = self.child_cut[:1, :].view(1, 2).expand(sample_size, 2)
@@ -608,6 +633,8 @@ class MultiLayerTetra(nn.Module):
         #? .int() is for argmax_cpu, and might be removed after debugging
         edge_valid_for_original_idincell = torch.argmax(edge_valid_for_original.int(), axis=1)
 
+        #? this is to seperate old cells from newly merged cells, maybe move it to a better position later.
+        self.cell_offset[1] = self.cell_offset[0]
         self.apply_sampled(edge_valid_for_original)
         print("an additional ", self.extend_cell_offset[0], " cells will be added.")
         if DEBUG:
@@ -1056,7 +1083,7 @@ class FlexNerfField(Field):
             self._sample_locations.requires_grad = True
         positions_flat = positions.view(-1, 3)
 
-        feature, extend_feature, cell_id, extend_cell_id, importance = self.multi_layer_tetra(positions_flat, use_extend=True)
+        feature, extend_feature, old_feature, cell_id, extend_cell_id, importance = self.multi_layer_tetra(positions_flat, use_extend=True)
 
         def feature2out(input_feature):
             h = self.mlp_base_mlp(input_feature).view(*ray_samples.frustums.shape, -1)
@@ -1073,6 +1100,7 @@ class FlexNerfField(Field):
 
         density, density_embedding = feature2out(feature)
         extend_density, extend_density_embedding = feature2out(extend_feature)
+        old_density, old_density_embedding = feature2out(old_feature)
         cell_id = cell_id.view(*ray_samples.frustums.shape, -1)
         extend_cell_id = extend_cell_id.view(*ray_samples.frustums.shape, -1)
         importance = importance.view(*ray_samples.frustums.shape, -1)
@@ -1082,7 +1110,10 @@ class FlexNerfField(Field):
         else:
             mask = None
 
-        return density, density_embedding, extend_density, extend_density_embedding, cell_id, extend_cell_id, importance, mask
+        return density, density_embedding, \
+                extend_density, extend_density_embedding, \
+                old_density, old_density_embedding, \
+                cell_id, extend_cell_id, importance, mask
 
     def get_outputs(
         self, ray_samples: RaySamples, density_embedding: Optional[Tensor] = None
@@ -1118,6 +1149,7 @@ class FlexNerfField(Field):
         """
         density, density_embedding, \
             extend_density, extend_density_embedding, \
+            old_density, old_density_embedding, \
             cell_id, extend_cell_id, importance, mask = self.get_density(ray_samples)
 
         weight_lower_bound = 1e-7
@@ -1132,6 +1164,10 @@ class FlexNerfField(Field):
             extend_field_outputs[FieldHeadNames.DENSITY] = torch.where(mask, extend_density, 0) + weight_lower_bound
             extend_field_outputs[FieldHeadNames.RGB] = torch.where(mask.expand(-1,-1,3), extend_field_outputs[FieldHeadNames.RGB], 0)
             extend_field_outputs[FieldHeadNames.CELLID] = torch.where(mask.expand(-1,-1,3), extend_cell_id, 0)
+
+            old_field_outputs = self.get_outputs(ray_samples, density_embedding=old_density_embedding)
+            old_field_outputs[FieldHeadNames.DENSITY] = torch.where(mask, old_density, 0) + weight_lower_bound
+            old_field_outputs[FieldHeadNames.RGB] = torch.where(mask.expand(-1,-1,3), old_field_outputs[FieldHeadNames.RGB], 0)
         else:
             field_outputs = self.get_outputs(ray_samples, density_embedding=density_embedding)
             field_outputs[FieldHeadNames.DENSITY] = density + weight_lower_bound  # type: ignore
@@ -1142,7 +1178,11 @@ class FlexNerfField(Field):
             extend_field_outputs[FieldHeadNames.DENSITY] = extend_density + weight_lower_bound
             extend_field_outputs[FieldHeadNames.CELLID] = extend_cell_id
 
-        return field_outputs, extend_field_outputs
+            old_field_outputs = self.get_outputs(ray_samples, density_embedding=old_density_embedding)
+            old_field_outputs[FieldHeadNames.DENSITY] = old_density + weight_lower_bound
+            old_field_outputs[FieldHeadNames.CELLID] = old_cell_id
+
+        return field_outputs, extend_field_outputs, old_field_outputs
 
     def test_forward(self, step):
         if step == 0:

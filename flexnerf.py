@@ -197,7 +197,7 @@ class FlexNeRFModel(Model):
         callbacks = []
         kwargs_dict = {"result": self.result}
         #? should be put into config
-        importance_profile_start_step = 6400
+        importance_profile_start_step = 0
         update_importance_callback = TrainingCallback(
                     where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
                     update_every_num_iters=1,
@@ -215,22 +215,23 @@ class FlexNeRFModel(Model):
 
         false_refine_callback = TrainingCallback(
                     where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
-                    update_every_num_iters=50,
+                    update_every_num_iters=100,
                     func=partial(self.field.multi_layer_tetra.refine_samples, update_original=False, 
                                 start_step=importance_profile_start_step),
                 )
 
         true_refine_callback = TrainingCallback(
                     where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
-                    update_every_num_iters=3200,
+                    update_every_num_iters=1600,
                     func=partial(self.field.multi_layer_tetra.refine_samples, update_original=True,
                                 start_step=importance_profile_start_step),
                 )
 
         def update_step(step):
+            self.step = step
             self.field.multi_layer_tetra.step = step
         update_step_callback = TrainingCallback(
-            where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
+            where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
             update_every_num_iters=1,
             func=update_step,
         )
@@ -258,21 +259,26 @@ class FlexNeRFModel(Model):
     def get_outputs(self, ray_bundle: RayBundle):
         ray_samples: RaySamples
         ray_samples_coarse = self.sampler_uniform(ray_bundle)
-        field_outputs_coarse, extend_field_outputs_coarse = self.field.forward(ray_samples_coarse)
+        field_outputs_coarse, _, _ = self.field.forward(ray_samples_coarse)
         weights_coarse = ray_samples_coarse.get_weights(field_outputs_coarse[FieldHeadNames.DENSITY])
         del field_outputs_coarse
-        del extend_field_outputs_coarse
         ray_samples = self.sampler_pdf(ray_bundle, ray_samples_coarse, weights_coarse)
 
-        field_outputs, extend_field_outputs = self.field.forward(ray_samples)
+        field_outputs, extend_field_outputs, old_field_outputs = self.field.forward(ray_samples)
 
         if self.config.use_gradient_scaling:
             field_outputs = scale_gradients_by_distance_squared(field_outputs, ray_samples)
             extend_field_outputs = scale_gradients_by_distance_squared(extend_field_outputs, ray_samples)
+            old_field_outputs = scale_gradients_by_distance_squared(old_field_outputs, ray_samples)
 
         weights, transmittance = ray_samples.get_weights(field_outputs[FieldHeadNames.DENSITY], weights_only=False)
-
         rgb = self.renderer_rgb(rgb=field_outputs[FieldHeadNames.RGB], weights=weights, background_color="black")
+        depth = self.renderer_depth(weights=weights, ray_samples=ray_samples)
+        accumulation = self.renderer_accumulation(weights=weights)
+
+        weights_old = ray_samples.get_weights(old_field_outputs[FieldHeadNames.DENSITY])
+        rgb_old = self.renderer_rgb(rgb=old_field_outputs[FieldHeadNames.RGB], weights=weights_old, background_color="black")
+        accumulation_old = self.renderer_accumulation(weights=weights_old)
         if DEBUG:
             if torch.any(torch.isnan(rgb)):
                 nan_id = torch.nonzero(torch.any(torch.isnan(rgb), axis=-1)).view(-1)[0]
@@ -287,9 +293,6 @@ class FlexNeRFModel(Model):
                     write_file.write(str(field_outputs[FieldHeadNames.RGB][nan_id]))
                     write_file.write("\n====================== Assertion Failed =====================")
                 assert 0
-
-        depth = self.renderer_depth(weights=weights, ray_samples=ray_samples)
-        accumulation = self.renderer_accumulation(weights=weights)
 
         #? change the `True` on the next line to be something in `self.config`, about computing extend
         if True:
@@ -352,6 +355,8 @@ class FlexNeRFModel(Model):
             "accumulation": accumulation,
             "depth": depth,
             "rgb_extend": rgb_extend,
+            "rgb_old": rgb_old,
+            "accumulation_old": accumulation_old,
             "importance_slice_clear": rgb_importance_slice_clear,
             "cellid_slice_clear": rgb_cellid_slice_clear,
             "cellid_slice": rgb_cellid_slice,
@@ -384,11 +389,22 @@ class FlexNeRFModel(Model):
             gt_image=image,
         )
 
+        old_pred_rgb, old_gt_rgb = self.renderer_rgb.blend_background_for_loss_computation(
+            pred_image=outputs["rgb_old"],
+            pred_accumulation=outputs["accumulation_old"],
+            gt_image=image
+        )
+
         # update self.result for callbacks
         self.result["pred_rgb"] = pred_rgb
         self.result["gt_rgb"] = gt_rgb
 
-        loss_dict["rgb_loss"] = self.rgb_loss(gt_rgb, pred_rgb) + 0.1*self.rgb_loss(extend_gt_rgb, extend_pred_rgb)
+        rgb_loss_weight = self.step%1600/1600
+        old_rgb_loss_weight = 1 - self.step%1600/1600
+        extend_rgb_loss_weight = (self.step%1600/1600) * (self.step%50/50 if self.step%100<50 else 1-self.step%50/50) * 0.1
+        loss_dict["rgb_loss"] = rgb_loss_weight*self.rgb_loss(gt_rgb, pred_rgb) + \
+                                old_rgb_loss_weight*self.rgb_loss(old_gt_rgb, old_pred_rgb) + \
+                                extend_rgb_loss_weight*self.rgb_loss(extend_gt_rgb, extend_pred_rgb)
         return loss_dict
 
     @torch.inference_mode()
