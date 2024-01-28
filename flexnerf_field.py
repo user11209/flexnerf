@@ -233,8 +233,8 @@ class MultiLayerTetra(nn.Module):
 
             self.gather_info_from_cell_id(None, cells)
             additional_feature = interpolate_field_value(xyz, cells)
-            feature += torch.where(update_mask, additional_feature, 0)
-            old_feature += torch.where(update_mask_old, additional_feature, 0)
+            feature += torch.where(update_mask[:, None], additional_feature, 0)
+            old_feature += torch.where(update_mask_old[:, None], additional_feature, 0)
             
         cell_id = cells["cell_id"]
         importance = torch.max(self.inter_level_importance[cell_id, :], axis=-1).values
@@ -246,7 +246,7 @@ class MultiLayerTetra(nn.Module):
             extend_cell_id = cells["cell_id"]
             self.gather_info_from_cell_id(None, cells)
             additional_extend_feature = interpolate_field_value(xyz, cells)
-            extend_feature = feature + torch.where(update_mask_extend, additional_extend_feature, 0)
+            extend_feature = feature + torch.where(update_mask_extend[:, None], additional_extend_feature, 0)
             #? possibly not necessary to pass all the three values all the time?
             return feature, extend_feature, old_feature, cell_id, extend_cell_id, importance
 
@@ -262,6 +262,10 @@ class MultiLayerTetra(nn.Module):
             cells_dict["feature"] = self.field[point_id, :]
         if "cut" not in cells_dict:
             cells_dict["cut"] = self.child_cut[cell_id, :]
+        if "abandoned_vertex" in cells_dict:
+            mask = torch.zeros_like(point_id, dtype=torch.bool)
+            mask.scatter_(1, cells_dict["abandoned_vertex"][:,None]%4, cells_dict["abandoned_vertex"][:,None] != -1)
+            cells_dict["feature"] = torch.where(mask[:,:,None], cells_dict["feature"], 0)
         return
 
     # @torch.inference_mode()
@@ -532,10 +536,12 @@ class MultiLayerTetra(nn.Module):
         child_cut              = torch.where(child_valid.view(-1,1),   child_cut,              parent_cut)
         child_activation_layer = torch.where(child_valid,              child_activation_layer, parent_activation_layer)
 
+        #* use abandoned_vertex here to tell interpolate_field_value which point to abandon.
         return {"cell_id":          child_cell_id, 
                 "xyz":              child_xyz, 
                 "cut":              child_cut, 
-                "activation_layer": child_activation_layer}
+                "activation_layer": child_activation_layer,
+                "abandoned_vertex": torch.where(child_valid, abandoned_vertex, -1)}
 
     def search_extend(self, xyz, cells):
         cells = self.search_layer_i(xyz, cells, self.max_layer_num)
