@@ -264,7 +264,7 @@ class MultiLayerTetra(nn.Module):
             cells_dict["cut"] = self.child_cut[cell_id, :]
         if "abandoned_vertex" in cells_dict:
             mask = torch.zeros_like(point_id, dtype=torch.bool)
-            mask.scatter_(1, cells_dict["abandoned_vertex"][:,None]%4, cells_dict["abandoned_vertex"][:,None] != -1)
+            mask.scatter_(1, cells_dict["abandoned_vertex"][:,None].long()%4, cells_dict["abandoned_vertex"][:,None] != -1)
             cells_dict["feature"] = torch.where(mask[:,:,None], cells_dict["feature"], 0)
         return
 
