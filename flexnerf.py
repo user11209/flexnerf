@@ -41,7 +41,7 @@ from nerfstudio.model_components.losses import (
     pred_normal_loss,
     scale_gradients_by_distance_squared,
 )
-from nerfstudio.model_components.ray_samplers import ProposalNetworkSampler, UniformSampler
+from nerfstudio.model_components.ray_samplers import ProposalNetworkSampler, UniformSampler, UniformLinDispPiecewiseSampler, PDFSampler
 from nerfstudio.model_components.renderers import AccumulationRenderer, DepthRenderer, NormalsRenderer, RGBRenderer
 from nerfstudio.model_components.scene_colliders import NearFarCollider
 from nerfstudio.model_components.shaders import NormalsShader
@@ -49,7 +49,11 @@ from nerfstudio.models.base_model import Model, ModelConfig
 from nerfstudio.utils import colormaps
 
 from .flexnerf_field import FlexNerfField
+from functools import partial
 
+DEBUG = True
+DEBUG_file = "/home/zhangjw/nerfstudio/external/flexnerf/log_file.txt"
+DEBUG_global_i = 0
 
 @dataclass
 class FlexNeRFModelConfig(ModelConfig):
@@ -58,9 +62,9 @@ class FlexNeRFModelConfig(ModelConfig):
     _target: Type = field(default_factory=lambda: FlexNeRFModel)
     near_plane: float = 0.05
     """How far along the ray to start sampling."""
-    far_plane: float = 1000.0
+    far_plane: float = 2
     """How far along the ray to stop sampling."""
-    background_color: Literal["random", "last_sample", "black", "white"] = "last_sample"
+    background_color: Literal["random", "last_sample", "black", "white"] = "black"
     """Whether to randomize the background color."""
     hidden_dim: int = 64
     """Dimension of hidden layers"""
@@ -80,8 +84,10 @@ class FlexNeRFModelConfig(ModelConfig):
     """How many hashgrid features per level"""
     num_proposal_samples_per_ray: Tuple[int, ...] = (256, 96)
     """Number of samples per ray for each proposal network."""
-    num_nerf_samples_per_ray: int = 48
-    """Number of samples per ray for the nerf network."""
+    num_coarse_samples: int = 64
+    """Number of samples in coarse field evaluation"""
+    num_importance_samples: int = 128
+    """Number of samples in fine field evaluation"""
     proposal_update_every: int = 5
     """Sample every n steps after the warmup"""
     proposal_warmup: int = 5000
@@ -89,13 +95,6 @@ class FlexNeRFModelConfig(ModelConfig):
     num_proposal_iterations: int = 2
     """Number of proposal network iterations."""
     use_same_proposal_network: bool = False
-    """Use the same proposal network. Otherwise use different ones."""
-    proposal_net_args_list: List[Dict] = field(
-        default_factory=lambda: [
-            {"hidden_dim": 16, "log2_hashmap_size": 17, "num_levels": 5, "max_res": 128, "use_linear": False},
-            {"hidden_dim": 16, "log2_hashmap_size": 17, "num_levels": 5, "max_res": 256, "use_linear": False},
-        ]
-    )
     """Arguments for the proposal density fields."""
     proposal_initial_sampler: Literal["piecewise", "uniform"] = "piecewise"
     """Initial sampler for the proposal network. Piecewise is preferred for unbounded scenes."""
@@ -156,54 +155,9 @@ class FlexNeRFModel(Model):
             implementation=self.config.implementation,
         )
 
-        self.density_fns = []
-        num_prop_nets = self.config.num_proposal_iterations
-        # Build the proposal network(s)
-        self.proposal_networks = torch.nn.ModuleList()
-        if self.config.use_same_proposal_network:
-            assert len(self.config.proposal_net_args_list) == 1, "Only one proposal network is allowed."
-            prop_net_args = self.config.proposal_net_args_list[0]
-            network = HashMLPDensityField(
-                self.scene_box.aabb,
-                spatial_distortion=scene_contraction,
-                **prop_net_args,
-                implementation=self.config.implementation,
-            )
-            self.proposal_networks.append(network)
-            self.density_fns.extend([network.density_fn for _ in range(num_prop_nets)])
-        else:
-            for i in range(num_prop_nets):
-                prop_net_args = self.config.proposal_net_args_list[min(i, len(self.config.proposal_net_args_list) - 1)]
-                network = HashMLPDensityField(
-                    self.scene_box.aabb,
-                    spatial_distortion=scene_contraction,
-                    **prop_net_args,
-                    implementation=self.config.implementation,
-                )
-                self.proposal_networks.append(network)
-            self.density_fns.extend([network.density_fn for network in self.proposal_networks])
-
         # Samplers
-        def update_schedule(step):
-            return np.clip(
-                np.interp(step, [0, self.config.proposal_warmup], [0, self.config.proposal_update_every]),
-                1,
-                self.config.proposal_update_every,
-            )
-
-        # Change proposal network initial sampler if uniform
-        initial_sampler = None  # None is for piecewise as default (see ProposalNetworkSampler)
-        if self.config.proposal_initial_sampler == "uniform":
-            initial_sampler = UniformSampler(single_jitter=self.config.use_single_jitter)
-
-        self.proposal_sampler = ProposalNetworkSampler(
-            num_nerf_samples_per_ray=self.config.num_nerf_samples_per_ray,
-            num_proposal_samples_per_ray=self.config.num_proposal_samples_per_ray,
-            num_proposal_network_iterations=self.config.num_proposal_iterations,
-            single_jitter=self.config.use_single_jitter,
-            update_sched=update_schedule,
-            initial_sampler=initial_sampler,
-        )
+        self.sampler_uniform = UniformSampler(num_samples=self.config.num_coarse_samples)
+        self.sampler_pdf = PDFSampler(num_samples=self.config.num_importance_samples)
 
         # Collider
         self.collider = NearFarCollider(near_plane=self.config.near_plane, far_plane=self.config.far_plane)
@@ -214,9 +168,6 @@ class FlexNeRFModel(Model):
         self.renderer_depth = DepthRenderer()
         self.renderer_normals = NormalsRenderer()
 
-        # shaders
-        self.normals_shader = NormalsShader()
-
         # losses
         self.rgb_loss = MSELoss()
 
@@ -225,90 +176,192 @@ class FlexNeRFModel(Model):
         self.ssim = structural_similarity_index_measure
         self.lpips = LearnedPerceptualImagePatchSimilarity(normalize=True)
 
+        # update field
+        self.result = {'cell_id':None, 'extend_cell_id':None,
+                      'weights_original':None, 'rgb_original':None, 
+                      'weights_extend':None, 'rgb_extend':None, 
+                      'pred_rgb':None, 'gt_rgb':None, 'density':None}
+
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
         param_groups = {}
-        param_groups["proposal_networks"] = list(self.proposal_networks.parameters())
-        param_groups["fields"] = list(self.field.parameters())
+        multi_layer_feature = self.field.multi_layer_tetra.parameters()
+        multi_layer_feature_id = list(map(id, multi_layer_feature))
+        rest_params = filter(lambda x:id(x) not in multi_layer_feature_id, self.field.parameters())
+        param_groups["field_features"] = self.field.multi_layer_tetra.parameters()
+        param_groups["field_network"] = rest_params
         return param_groups
 
     def get_training_callbacks(
         self, training_callback_attributes: TrainingCallbackAttributes
     ) -> List[TrainingCallback]:
         callbacks = []
-        if self.config.use_proposal_weight_anneal:
-            # anneal the weights of the proposal network before doing PDF sampling
-            N = self.config.proposal_weights_anneal_max_num_iters
-
-            def set_anneal(step):
-                # https://arxiv.org/pdf/2111.12077.pdf eq. 18
-                train_frac = np.clip(step / N, 0, 1)
-
-                def bias(x, b):
-                    return b * x / ((b - 1) * x + 1)
-
-                anneal = bias(train_frac, self.config.proposal_weights_anneal_slope)
-                self.proposal_sampler.set_anneal(anneal)
-
-            callbacks.append(
-                TrainingCallback(
-                    where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
-                    update_every_num_iters=1,
-                    func=set_anneal,
-                )
-            )
-            callbacks.append(
-                TrainingCallback(
+        kwargs_dict = {"result": self.result}
+        #? should be put into config
+        importance_profile_start_step = 0
+        update_importance_callback = TrainingCallback(
                     where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
                     update_every_num_iters=1,
-                    func=self.proposal_sampler.step_cb,
+                    func=partial(self.field.multi_layer_tetra.update_importance_from_result, 
+                                start_step=importance_profile_start_step),
+                    kwargs=kwargs_dict,
                 )
-            )
+
+        global_annealing_callback = TrainingCallback(
+                    where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
+                    update_every_num_iters=250,
+                    func=partial(self.field.multi_layer_tetra.global_importance_annealing_callback,
+                                start_step=importance_profile_start_step),
+                )
+
+        false_refine_callback = TrainingCallback(
+                    where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
+                    update_every_num_iters=100,
+                    func=partial(self.field.multi_layer_tetra.refine_samples, update_original=False, 
+                                start_step=importance_profile_start_step),
+                )
+
+        true_refine_callback = TrainingCallback(
+                    where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
+                    update_every_num_iters=1600,
+                    func=partial(self.field.multi_layer_tetra.refine_samples, update_original=True,
+                                start_step=importance_profile_start_step),
+                )
+
+        def update_step(step):
+            self.step = step
+            self.field.multi_layer_tetra.step = step
+        update_step_callback = TrainingCallback(
+            where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
+            update_every_num_iters=1,
+            func=update_step,
+        )
+        
+        # temp_debug
+        def check_consistency(step):
+            if step == 12002:
+                self.temp_storage = self.field.multi_layer_tetra.field[:21, :].clone()
+            if step > 12010:
+                assert torch.all(self.temp_storage == self.field.multi_layer_tetra.field[:21,:])
+        check_consistency_callback = TrainingCallback(
+            where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
+            update_every_num_iters=1,
+            func=check_consistency,
+        )
+
+        # callbacks.append(check_consistency_callback)
+        callbacks.append(update_importance_callback)
+        callbacks.append(global_annealing_callback)
+        callbacks.append(false_refine_callback)
+        callbacks.append(true_refine_callback)
+        callbacks.append(update_step_callback)
         return callbacks
 
     def get_outputs(self, ray_bundle: RayBundle):
         ray_samples: RaySamples
-        ray_samples, weights_list, ray_samples_list = self.proposal_sampler(ray_bundle, density_fns=self.density_fns)
-        field_outputs = self.field.forward(ray_samples)
+        ray_samples_coarse = self.sampler_uniform(ray_bundle)
+        field_outputs_coarse, _, _ = self.field.forward(ray_samples_coarse)
+        weights_coarse = ray_samples_coarse.get_weights(field_outputs_coarse[FieldHeadNames.DENSITY])
+        del field_outputs_coarse
+        ray_samples = self.sampler_pdf(ray_bundle, ray_samples_coarse, weights_coarse)
+
+        field_outputs, extend_field_outputs, old_field_outputs = self.field.forward(ray_samples)
+
         if self.config.use_gradient_scaling:
             field_outputs = scale_gradients_by_distance_squared(field_outputs, ray_samples)
+            extend_field_outputs = scale_gradients_by_distance_squared(extend_field_outputs, ray_samples)
+            old_field_outputs = scale_gradients_by_distance_squared(old_field_outputs, ray_samples)
 
-        weights = ray_samples.get_weights(field_outputs[FieldHeadNames.DENSITY])
-        weights_list.append(weights)
-        ray_samples_list.append(ray_samples)
-
-        rgb = self.renderer_rgb(rgb=field_outputs[FieldHeadNames.RGB], weights=weights)
+        weights, transmittance = ray_samples.get_weights(field_outputs[FieldHeadNames.DENSITY], weights_only=False)
+        rgb = self.renderer_rgb(rgb=field_outputs[FieldHeadNames.RGB], weights=weights, background_color="black")
         depth = self.renderer_depth(weights=weights, ray_samples=ray_samples)
         accumulation = self.renderer_accumulation(weights=weights)
+
+        weights_old = ray_samples.get_weights(old_field_outputs[FieldHeadNames.DENSITY])
+        rgb_old = self.renderer_rgb(rgb=old_field_outputs[FieldHeadNames.RGB], weights=weights_old, background_color="black")
+        accumulation_old = self.renderer_accumulation(weights=weights_old)
+        if DEBUG:
+            if torch.any(torch.isnan(rgb)):
+                nan_id = torch.nonzero(torch.any(torch.isnan(rgb), axis=-1)).view(-1)[0]
+                with open(DEBUG_file, "a") as write_file:
+                    write_file.write("look, rendering get an rgb of nan at id " + str(nan_id) + ".\n")
+                    write_file.write("we need to list almost all possible info, for example: \n")
+                    write_file.write("============== weights =============\n")
+                    write_file.write(str(weights[nan_id]))
+                    write_file.write("\n============== density =============\n")
+                    write_file.write(str(field_outputs[FieldHeadNames.DENSITY][nan_id]))
+                    write_file.write("\n============== rgb =================\n")
+                    write_file.write(str(field_outputs[FieldHeadNames.RGB][nan_id]))
+                    write_file.write("\n====================== Assertion Failed =====================")
+                assert 0
+
+        #? change the `True` on the next line to be something in `self.config`, about computing extend
+        if True:
+            weights_extend = ray_samples.get_weights(extend_field_outputs[FieldHeadNames.DENSITY])
+            rgb_extend = self.renderer_rgb(rgb=extend_field_outputs[FieldHeadNames.RGB], weights=weights_extend, background_color="black")
+
+        #? change the `True` on the next line to be something in `self.config`, about visualizing importance
+        if True:
+            @torch.inference_mode()
+            def importance2density_n_rgb(importance, cell_id):
+                # for importance
+                importance_rgb_raw = ((torch.log10(importance + 1e-8) + 8) / 9).expand(-1,-1,3)
+                # for cellis
+                rgb_mid = cell_id.float()*12345.678
+                rgb_raw = torch.cat([torch.sin(rgb_mid), torch.sin(1.11*rgb_mid), torch.sin(1.23*rgb_mid)], axis=-1)
+                rgb_raw = (rgb_raw + 1)/2
+
+                return importance_rgb_raw, rgb_raw
+            
+            importance_value = field_outputs[FieldHeadNames.IMPORTANCE]
+            cell_id = field_outputs[FieldHeadNames.CELLID]
+            extend_cell_id = extend_field_outputs[FieldHeadNames.CELLID]
+
+            global DEBUG_global_i
+            DEBUG_global_i += 1
+            if DEBUG and DEBUG_global_i%100==0 and DEBUG_global_i>=2000:
+                with open(DEBUG_file, "a") as write_file:
+                    write_file.write("the maximum importance sampled is "+ str(torch.max(importance_value).item())+ ".\n")
+
+            importance_rgb_raw, cellid_rgb_raw = importance2density_n_rgb(importance_value, cell_id)
+
+        # update self.result for callbacks
+        with torch.inference_mode():
+            self.result["cell_id"] = cell_id
+            self.result["extend_cell_id"] = extend_cell_id
+            self.result["weights_original"] = weights
+            self.result["rgb_original"] = field_outputs[FieldHeadNames.RGB]
+            self.result["weights_extend"] = weights_extend
+            self.result["rgb_extend"] = extend_field_outputs[FieldHeadNames.RGB]
+            self.result["transmittance"] = transmittance
+
+        with torch.inference_mode():
+            # slice_index = 65
+            slice_index = torch.max(ray_samples.frustums.starts > 0.8125, axis=1).indices.view(-1)
+            arange_index = torch.arange(slice_index.shape[0], device=slice_index.device)
+            slice_density = field_outputs[FieldHeadNames.DENSITY].clone()
+            slice_density[arange_index, slice_index] = 10000
+            slice_cellid_rgb_raw = field_outputs[FieldHeadNames.RGB].clone()
+            slice_cellid_rgb_raw[arange_index, slice_index, :] = cellid_rgb_raw[arange_index, slice_index, :]
+            weights_slice = ray_samples.get_weights(slice_density)
+            weights_slice_clear = torch.zeros_like(weights_slice)
+            weights_slice_clear[arange_index, slice_index] = 1
+            rgb_cellid_slice = self.renderer_rgb(rgb=slice_cellid_rgb_raw, weights=weights_slice)
+            rgb_importance_slice_clear = self.renderer_rgb(rgb=importance_rgb_raw, weights=weights_slice_clear)
+            rgb_cellid_slice_clear = self.renderer_rgb(rgb=slice_cellid_rgb_raw, weights=weights_slice_clear)
+            rgb_cellid_onobj = self.renderer_rgb(rgb=cellid_rgb_raw, weights=weights, background_color="black")
 
         outputs = {
             "rgb": rgb,
             "accumulation": accumulation,
             "depth": depth,
+            "rgb_extend": rgb_extend,
+            "rgb_old": rgb_old,
+            "accumulation_old": accumulation_old,
+            "importance_slice_clear": rgb_importance_slice_clear,
+            "cellid_slice_clear": rgb_cellid_slice_clear,
+            "cellid_slice": rgb_cellid_slice,
+            "cellid_onobj": rgb_cellid_onobj,
         }
-
-        if self.config.predict_normals:
-            normals = self.renderer_normals(normals=field_outputs[FieldHeadNames.NORMALS], weights=weights)
-            pred_normals = self.renderer_normals(field_outputs[FieldHeadNames.PRED_NORMALS], weights=weights)
-            outputs["normals"] = self.normals_shader(normals)
-            outputs["pred_normals"] = self.normals_shader(pred_normals)
-        # These use a lot of GPU memory, so we avoid storing them for eval.
-        if self.training:
-            outputs["weights_list"] = weights_list
-            outputs["ray_samples_list"] = ray_samples_list
-
-        if self.training and self.config.predict_normals:
-            outputs["rendered_orientation_loss"] = orientation_loss(
-                weights.detach(), field_outputs[FieldHeadNames.NORMALS], ray_bundle.directions
-            )
-
-            outputs["rendered_pred_normal_loss"] = pred_normal_loss(
-                weights.detach(),
-                field_outputs[FieldHeadNames.NORMALS].detach(),
-                field_outputs[FieldHeadNames.PRED_NORMALS],
-            )
-
-        for i in range(self.config.num_proposal_iterations):
-            outputs[f"prop_depth_{i}"] = self.renderer_depth(weights=weights_list[i], ray_samples=ray_samples_list[i])
 
         return outputs
 
@@ -319,8 +372,6 @@ class FlexNeRFModel(Model):
         predicted_rgb = outputs["rgb"]
         metrics_dict["psnr"] = self.psnr(predicted_rgb, gt_rgb)
 
-        if self.training:
-            metrics_dict["distortion"] = distortion_loss(outputs["weights_list"], outputs["ray_samples_list"])
         return metrics_dict
 
     def get_loss_dict(self, outputs, batch, metrics_dict=None):
@@ -332,25 +383,31 @@ class FlexNeRFModel(Model):
             gt_image=image,
         )
 
-        loss_dict["rgb_loss"] = self.rgb_loss(gt_rgb, pred_rgb)
-        if self.training:
-            loss_dict["interlevel_loss"] = self.config.interlevel_loss_mult * interlevel_loss(
-                outputs["weights_list"], outputs["ray_samples_list"]
-            )
-            assert metrics_dict is not None and "distortion" in metrics_dict
-            loss_dict["distortion_loss"] = self.config.distortion_loss_mult * metrics_dict["distortion"]
-            if self.config.predict_normals:
-                # orientation loss for computed normals
-                loss_dict["orientation_loss"] = self.config.orientation_loss_mult * torch.mean(
-                    outputs["rendered_orientation_loss"]
-                )
+        extend_pred_rgb, extend_gt_rgb = self.renderer_rgb.blend_background_for_loss_computation(
+            pred_image=outputs["rgb_extend"],
+            pred_accumulation=outputs["accumulation"],
+            gt_image=image,
+        )
 
-                # ground truth supervision for normals
-                loss_dict["pred_normal_loss"] = self.config.pred_normal_loss_mult * torch.mean(
-                    outputs["rendered_pred_normal_loss"]
-                )
+        old_pred_rgb, old_gt_rgb = self.renderer_rgb.blend_background_for_loss_computation(
+            pred_image=outputs["rgb_old"],
+            pred_accumulation=outputs["accumulation_old"],
+            gt_image=image
+        )
+
+        # update self.result for callbacks
+        self.result["pred_rgb"] = pred_rgb
+        self.result["gt_rgb"] = gt_rgb
+
+        rgb_loss_weight = self.step%1600/1600 if self.step < 51200 else 1
+        old_rgb_loss_weight = 1 - self.step%1600/1600 if self.step < 51200 else 0
+        extend_rgb_loss_weight = (self.step%1600/1600) * (self.step%50/50 if self.step%100<50 else 1-self.step%50/50) * 0.1 if self.step < 51200 else 0
+        loss_dict["rgb_loss"] = rgb_loss_weight*self.rgb_loss(gt_rgb, pred_rgb) + \
+                                old_rgb_loss_weight*self.rgb_loss(old_gt_rgb, old_pred_rgb) + \
+                                extend_rgb_loss_weight*self.rgb_loss(extend_gt_rgb, extend_pred_rgb)
         return loss_dict
 
+    @torch.inference_mode()
     def get_image_metrics_and_images(
         self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
     ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
@@ -358,6 +415,10 @@ class FlexNeRFModel(Model):
         predicted_rgb = outputs["rgb"]  # Blended with background (black if random background)
         gt_rgb = self.renderer_rgb.blend_background(gt_rgb)
         acc = colormaps.apply_colormap(outputs["accumulation"])
+        importance_slice_clear = outputs["importance_slice_clear"]
+        cellid_slice = outputs["cellid_slice"]
+        cellid_slice_clear = outputs["cellid_slice_clear"]
+        cellid_onobj = outputs["cellid_onobj"]
         depth = colormaps.apply_depth_colormap(
             outputs["depth"],
             accumulation=outputs["accumulation"],
@@ -379,14 +440,8 @@ class FlexNeRFModel(Model):
         metrics_dict = {"psnr": float(psnr.item()), "ssim": float(ssim)}  # type: ignore
         metrics_dict["lpips"] = float(lpips)
 
-        images_dict = {"img": combined_rgb, "accumulation": combined_acc, "depth": combined_depth}
-
-        for i in range(self.config.num_proposal_iterations):
-            key = f"prop_depth_{i}"
-            prop_depth_i = colormaps.apply_depth_colormap(
-                outputs[key],
-                accumulation=outputs["accumulation"],
-            )
-            images_dict[key] = prop_depth_i
+        images_dict = {"img": combined_rgb, "accumulation": combined_acc, "depth": combined_depth, 
+                        "importance_slice_clear": importance_slice_clear, "cellid_slice": cellid_slice, "cellid_slice_clear": cellid_slice_clear,
+                        "cellid_onobj": cellid_onobj}
 
         return metrics_dict, images_dict
