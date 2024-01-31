@@ -402,7 +402,7 @@ class FlexNeRFModel(Model):
         move_step = self.step-1
         rgb_loss_weight = move_step%1600/1600 if move_step < 51200 else 1
         old_rgb_loss_weight = 1 - move_step%1600/1600 if move_step < 51200 else 0
-        extend_rgb_loss_weight = (move_step%1600/1600) * (move_step%50/50 if move_step%100<50 else 1-move_step%50/50) * 0.1 if move_step < 51200 else 0
+        extend_rgb_loss_weight = 0
         loss_dict["rgb_loss"] = rgb_loss_weight*self.rgb_loss(gt_rgb, pred_rgb) + \
                                 old_rgb_loss_weight*self.rgb_loss(old_gt_rgb, old_pred_rgb) + \
                                 extend_rgb_loss_weight*self.rgb_loss(extend_gt_rgb, extend_pred_rgb)
