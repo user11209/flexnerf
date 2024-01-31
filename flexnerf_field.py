@@ -121,7 +121,7 @@ class MultiLayerTetra(nn.Module):
         # **original** cells or points are continuously stored
         self.register_buffer("cell_offset", torch.zeros(2, dtype=torch.int64))
         self.register_buffer("edge_offset", torch.zeros(1, dtype=torch.int64))
-        self.register_buffer("point_offset", torch.zeros(1, dtype=torch.int64))
+        self.register_buffer("point_offset", torch.zeros(2, dtype=torch.int64))
         # **extend** cells or points are continuously stored, 
         # note that the first a few layers are fully covered by original, so extend_offset[i] == extend_offset[i+1] for them
         # extend_offset[0] == 0, and it actually starts from original_offset[-1]
@@ -195,6 +195,10 @@ class MultiLayerTetra(nn.Module):
             "xyz",
             torch.zeros((self.max_point_count, 3), dtype=torch.float32)
         )
+        self.register_buffer(
+            "parent_points",
+            -torch.ones((self.max_point_count, 2), dtype=torch.int64)
+        )
 
         # !note: the following values contain some flags valueable in tree organization
         self.register_buffer("edge_sorted", torch.tensor([False]))
@@ -215,6 +219,7 @@ class MultiLayerTetra(nn.Module):
         self.remove_last_sampled()
         # TODO: check boundaries, no to exceed the `max_??_count`, especially for sample_extend. Note, merge_extend lack 1 positional argument for that reason. temporarily set it to be 2. Note, this value means how many parent cells will be divided, so the actual increased cell number is at most twice the value
         if update_original:
+            self.apply_newest_layer_field()
             self.merge_extend(torch.tensor(16, dtype=torch.int64))
             if not initializing:
                 utils.reset_global_optimizers()
@@ -236,13 +241,15 @@ class MultiLayerTetra(nn.Module):
             next_layer_cell_id = cells["cell_id"]
             old_cell_id.masked_scatter(next_layer_cell_id >= self.cell_offset[1], last_layer_cell_id)
         cell_id = cells["cell_id"]
-        self.gather_info_from_cell_id(cell_id, cells)
-        feature = interpolate_field_value(xyz, cells)
+        self.gather_info_from_cell_id(cell_id, cells, point_id_thresh=self.point_offset[1])
+        additional_feature = interpolate_field_value(xyz, cells)
 
         old_cell_id.masked_scatter(old_cell_id == 0, cell_id)
         old_cells = {}
         self.gather_info_from_cell_id(old_cell_id, old_cells)
         old_feature = interpolate_field_value(xyz, old_cells)
+
+        feature = old_feature + additional_feature
 
         importance = torch.max(self.inter_level_importance[cell_id, :], axis=-1).values
         if not use_extend:
@@ -250,12 +257,13 @@ class MultiLayerTetra(nn.Module):
         else:
             cells = self.search_extend(xyz, cells)
             extend_cell_id = cells["cell_id"]
-            self.gather_info_from_cell_id(extend_cell_id, cells)
-            extend_feature = interpolate_field_value(xyz, cells)
+            self.gather_info_from_cell_id(extend_cell_id, cells, point_id_thresh=self.point_offset[0])
+            additional_extend_feature = interpolate_field_value(xyz, cells)
+            extend_feature = additional_extend_feature + feature.detache()
             #? possibly not necessary to pass all the three values all the time?
             return feature, extend_feature, old_feature, cell_id, extend_cell_id, importance
 
-    def gather_info_from_cell_id(self, cell_id, cells_dict):
+    def gather_info_from_cell_id(self, cell_id, cells_dict, point_id_thresh=None):
         if cell_id == None:
             cell_id = cells_dict["cell_id"]
         elif "cell_id" not in cells_dict:
@@ -268,8 +276,8 @@ class MultiLayerTetra(nn.Module):
         if "cut" not in cells_dict:
             cells_dict["cut"] = self.child_cut[cell_id, :]
         #* a new feature, blocking gradients from passing to original points. Only gradients of extend points can be utilized.
-        if "update_point_mask" in cells_dict:
-            cells_dict["feature"] = torch.where(cells_dict["update_point_mask"][:,:,None], cells_dict["feature"], cells_dict["feature"].detach())
+        if point_id_thresh != None:
+            cells_dict["feature"] = torch.where((point_id>=point_id_thresh)[:,:,None], cells_dict["feature"], 0)
         return
 
     # @torch.inference_mode()
@@ -502,7 +510,7 @@ class MultiLayerTetra(nn.Module):
                 "cut":              cut, 
                 "activation_layer": activation_layer}
 
-    def search_layer_i(self, xyz, parent_cells, i, return_update_point_mask=False):
+    def search_layer_i(self, xyz, parent_cells, i):
         sample_num = xyz.shape[0]
 
         parent_id = parent_cells["cell_id"]
@@ -544,14 +552,10 @@ class MultiLayerTetra(nn.Module):
                        "xyz":              child_xyz, 
                        "cut":              child_cut, 
                        "activation_layer": child_activation_layer}
-        if return_update_point_mask:
-            update_point_mask = torch.zeros(sample_num, 4, dtype=torch.bool, device=xyz.device)
-            update_point_mask.scatter_(1, abandoned_vertex[:,None].long()%4, abandoned_vertex[:,None] != -1)
-            return_dict["update_point_mask"] = update_point_mask
         return return_dict
 
     def search_extend(self, xyz, cells):
-        cells = self.search_layer_i(xyz, cells, self.max_layer_num, return_update_point_mask=True)
+        cells = self.search_layer_i(xyz, cells, self.max_layer_num)
         return cells
 
     @torch.inference_mode()
@@ -580,6 +584,7 @@ class MultiLayerTetra(nn.Module):
         #** clean up point info
         self.field[point_start:point_end, :] = 0
         self.xyz[point_start:point_end, :] = 0
+        self.parent_points[point_start:point_end, :] = -1
 
         #** clean up overall extend labels
         self.extend_cell_offset[0] = 0
@@ -645,6 +650,7 @@ class MultiLayerTetra(nn.Module):
 
         #? this is to seperate old cells from newly merged cells, maybe move it to a better position later.
         self.cell_offset[1] = self.cell_offset[0]
+        self.point_offset[1] = self.point_offset[0]
         self.apply_sampled(edge_valid_for_original)
         print("an additional ", self.extend_cell_offset[0], " cells will be added.")
         if DEBUG:
@@ -785,17 +791,30 @@ class MultiLayerTetra(nn.Module):
         divided_point_idincell = self.child_cut[one_cell_per_point, :].long()
         parent_point_index_one_cell_per_point = self.point_index[one_cell_per_point, :]
         divided_point_index = torch.gather(parent_point_index_one_cell_per_point, 1, divided_point_idincell)
-        child_field = torch.sum(self.field[divided_point_index, :], axis=1) / 2
         child_xyz = torch.sum(self.xyz[divided_point_index, :], axis=1) / 2
 
         point_start = self.point_offset[0]
         point_end = self.point_offset[0] + one_cell_per_point.shape[0]
-        self.field[point_start:point_end, :] = child_field
+        self.field[point_start:point_end, :] = 0
         self.xyz[point_start:point_end, :] = child_xyz
+        self.parent_points[point_start:point_end, :] = divided_point_index
 
         # **change overall extend label
         self.extend_cell_offset[0] = child_end - child_start
         self.extend_point_offset[0] = point_end - point_start
+
+    @torch.inference_mode()
+    def apply_newest_layer_field(self):
+        newest_layer_point_start = self.point_offset[1]
+        newest_layer_point_end = self.point_offset[0]
+        if self.point_offset[1] == 0:
+            return
+
+        newest_layer_point_parent_point = self.parent_points[newest_layer_point_start:newest_layer_point_end, :]
+        newest_layer_point_field_base_value = torch.sum(self.field[newest_layer_point_parent_point, :], axis=1) / 2
+        newest_layer_point_field_change = self.field[newest_layer_point_start:newest_layer_point_end, :]
+        self.field[newest_layer_point_start:newest_layer_point_end, :] = newest_layer_point_field_base_value + \
+                                                                        newest_layer_point_field_change
 
     # ! second level detailed function definition starts here
     def get_tetra_xyz(self, aabb):
@@ -1200,7 +1219,6 @@ class FlexNerfField(Field):
 
             old_field_outputs = self.get_outputs(ray_samples, density_embedding=old_density_embedding)
             old_field_outputs[FieldHeadNames.DENSITY] = old_density + weight_lower_bound
-            old_field_outputs[FieldHeadNames.CELLID] = old_cell_id
 
         return field_outputs, extend_field_outputs, old_field_outputs
 
