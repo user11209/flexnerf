@@ -1,0 +1,315 @@
+an additional 2 cells will be added.
+updating: cell 3 edge 10 point 5.
+ [inter_level_importance]: cell 0 is updating its edge 1 with new value 9.253744437387468e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.831763744354248
+ [remove_empty_importance]: cell 0 is updating its edge 1 with new value 1.3801108315442258e-40 which without averaging is 0.0 and cellwise_update_rate 0.004424309823662043 and cellwise_importance_power 5418 and momentum 0.831763744354248
+an additional 4 cells will be added.
+updating: cell 7 edge 18 point 7.
+ [inter_level_importance]: cell 3 is updating its edge 4 with new value 1.8410736268847927e-09 which without averaging is 2.7384651275497163e-06 and cellwise_update_rate 0.9999740719795227 and cellwise_importance_power 0.02587861567735672 and momentum 0.056739434599876404
+ [remove_empty_importance]: cell 3 is updating its edge 4 with new value 0.06124300882220268 which without averaging is 0.061243005096912384 and cellwise_update_rate 1.5589588661451347e-19 and cellwise_importance_power 43284 and momentum 0.056739434599876404
+ [inter_level_importance]: cell 4 is updating its edge 0 with new value 4.870645220478309e-09 which without averaging is 1.9140074982715305e-06 and cellwise_update_rate 1.0 and cellwise_importance_power 9.04137959878426e-06 and momentum 0.006835509091615677
+ [remove_empty_importance]: cell 4 is updating its edge 0 with new value 1.430702330391284e-38 which without averaging is 0.0 and cellwise_update_rate 0.9900449514389038 and cellwise_importance_power 10 and momentum 0.006835509091615677
+ [inter_level_importance]: cell 0 is updating its edge 1 with new value 7.403002211248122e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.0021083292085677385
+ [remove_empty_importance]: cell 0 is updating its edge 1 with new value 1.0010315709750763e-40 which without averaging is 0.0 and cellwise_update_rate 0.001486735767684877 and cellwise_importance_power 6508 and momentum 0.0021083292085677385
+ [inter_level_importance]: cell 3 is updating its edge 0 with new value 0.0018732224125415087 which without averaging is 0.00784082617610693 and cellwise_update_rate 0.9345959424972534 and cellwise_importance_power 67.60799407958984 and momentum 0.000870168674737215
+ [remove_empty_importance]: cell 3 is updating its edge 0 with new value 0.07083785533905029 which without averaging is 0.07083785533905029 and cellwise_update_rate 2.175329914649609e-19 and cellwise_importance_power 42951 and momentum 0.000870168674737215
+ [inter_level_importance]: cell 4 is updating its edge 4 with new value 9.398017475348297e-09 which without averaging is 0.00027316430350765586 and cellwise_update_rate 0.9999988675117493 and cellwise_importance_power 0.0010910035343840718 and momentum 0.00046579193440265954
+ [remove_empty_importance]: cell 4 is updating its edge 4 with new value 8.13276882090981e-30 which without averaging is 0.0 and cellwise_update_rate 0.9940150380134583 and cellwise_importance_power 6 and momentum 0.00046579193440265954
+ [inter_level_importance]: cell 0 is updating its edge 1 with new value 5.9223959070209276e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.0005916720256209373
+ [remove_empty_importance]: cell 0 is updating its edge 1 with new value 0.022181743755936623 which without averaging is 0.02226322516798973 and cellwise_update_rate 0.002292846329510212 and cellwise_importance_power 6075 and momentum 0.0005916720256209373
+ [inter_level_importance]: cell 3 is updating its edge 2 with new value 1.8941240310668945 which without averaging is 1.7311590909957886 and cellwise_update_rate 0.12422420084476471 and cellwise_importance_power 2084.651123046875 and momentum 0.000993436435237527
+ [remove_empty_importance]: cell 3 is updating its edge 2 with new value 0.07906630635261536 which without averaging is 0.07906629890203476 and cellwise_update_rate 2.0322576539751404e-19 and cellwise_importance_power 43019 and momentum 0.000993436435237527
+ [inter_level_importance]: cell 4 is updating its edge 2 with new value 4.975784229088731e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 6.10352581134066e-05 and momentum 0.00220044469460845
+ [remove_empty_importance]: cell 4 is updating its edge 2 with new value 3.207743718479568e-33 which without averaging is 0.0 and cellwise_update_rate 0.9831355214118958 and cellwise_importance_power 17 and momentum 0.00220044469460845
+ [inter_level_importance]: cell 0 is updating its edge 1 with new value 5.9223959070209276e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.0032058092765510082
+ [remove_empty_importance]: cell 0 is updating its edge 1 with new value 0.0009275214979425073 which without averaging is 0.0009215982863679528 and cellwise_update_rate 0.0013945221435278654 and cellwise_importance_power 6572 and momentum 0.0032058092765510082
+ [inter_level_importance]: cell 3 is updating its edge 3 with new value 0.5524683594703674 which without averaging is 0.5975513458251953 and cellwise_update_rate 0.4621979892253876 and cellwise_importance_power 771.3859252929688 and momentum 0.004986333195120096
+ [remove_empty_importance]: cell 3 is updating its edge 3 with new value 0.004053767304867506 which without averaging is 0.004053767770528793 and cellwise_update_rate 3.371622039472467e-19 and cellwise_importance_power 42513 and momentum 0.004986333195120096
+ [inter_level_importance]: cell 4 is updating its edge 4 with new value 9.397838063307518e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.0049949693493545055
+ [remove_empty_importance]: cell 4 is updating its edge 4 with new value 5.227861682711978e-24 which without averaging is 0.04168080911040306 and cellwise_update_rate 0.9772514700889587 and cellwise_importance_power 23 and momentum 0.0049949693493545055
+ [inter_level_importance]: cell 0 is updating its edge 1 with new value 4.7379122847246435e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.00537944445386529
+ [remove_empty_importance]: cell 0 is updating its edge 1 with new value 0.040069181472063065 which without averaging is 0.040041226893663406 and cellwise_update_rate 0.0013159035006538033 and cellwise_importance_power 6630 and momentum 0.00537944445386529
+ [inter_level_importance]: cell 3 is updating its edge 4 with new value 0.4349879324436188 which without averaging is 0.4837035834789276 and cellwise_update_rate 0.6410812735557556 and cellwise_importance_power 444.3824157714844 and momentum 0.008088050410151482
+ [remove_empty_importance]: cell 3 is updating its edge 4 with new value 0.025447366759181023 which without averaging is 0.025447363033890724 and cellwise_update_rate 2.5993649271232534e-19 and cellwise_importance_power 42773 and momentum 0.008088050410151482
+the maximum importance sampled is 0.99688321352005.
+ [inter_level_importance]: cell 4 is updating its edge 5 with new value 4.15068068804203e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.010561943054199219
+ [remove_empty_importance]: cell 4 is updating its edge 5 with new value 8.800904853428362e-22 which without averaging is 0.0 and cellwise_update_rate 0.9970030188560486 and cellwise_importance_power 3 and momentum 0.010561943054199219
+the maximum importance sampled is 0.99688321352005.
+ [inter_level_importance]: cell 0 is updating its edge 1 with new value 4.7379122847246435e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.009272783994674683
+ [remove_empty_importance]: cell 0 is updating its edge 1 with new value 0.0022338947746902704 which without averaging is 0.0022341993171721697 and cellwise_update_rate 0.0013723765732720494 and cellwise_importance_power 6588 and momentum 0.009272783994674683
+the maximum importance sampled is 0.99688321352005.
+ [inter_level_importance]: cell 0 is updating its edge 1 with new value 3.790332936404184e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.009967000223696232
+ [remove_empty_importance]: cell 0 is updating its edge 1 with new value 0.00040391800575889647 which without averaging is 0.0004037367762066424 and cellwise_update_rate 0.0012379958061501384 and cellwise_importance_power 6691 and momentum 0.009967000223696232
+an additional 6 cells will be added.
+updating: cell 13 edge 27 point 9.
+the maximum importance sampled is 9.580646498363876e-09.
+the maximum importance sampled is 1.1712318226386742e-08.
+the maximum importance sampled is 9.580646498363876e-09.
+the maximum importance sampled is 9.580646498363876e-09.
+the maximum importance sampled is 9.580646498363876e-09.
+the maximum importance sampled is 9.580646498363876e-09.
+the maximum importance sampled is 0.8525893688201904.
+ [inter_level_importance]: cell 8 is updating its edge 3 with new value 0.39883938431739807 which without averaging is 0.324288547039032 and cellwise_update_rate 0.9789229035377502 and cellwise_importance_power 21.291961669921875 and momentum 0.01304076611995697
+ [remove_empty_importance]: cell 8 is updating its edge 3 with new value 1.0429245233535767 which without averaging is 1.0429315567016602 and cellwise_update_rate 1.6447011148557067e-05 and cellwise_importance_power 11010 and momentum 0.01304076611995697
+the maximum importance sampled is 1.1195933818817139.
+ [inter_level_importance]: cell 7 is updating its edge 4 with new value 0.1528552919626236 which without averaging is 0.13802550733089447 and cellwise_update_rate 0.8275280594825745 and cellwise_importance_power 189.2200164794922 and momentum 0.018121998757123947
+ [remove_empty_importance]: cell 7 is updating its edge 4 with new value 0.38319578766822815 which without averaging is 0.38319578766822815 and cellwise_update_rate 2.6443428406707804e-15 and cellwise_importance_power 33550 and momentum 0.018121998757123947
+the maximum importance sampled is 1.1101462841033936.
+ [inter_level_importance]: cell 4 is updating its edge 3 with new value 1.1712318226386742e-08 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.02423863671720028
+ [remove_empty_importance]: cell 4 is updating its edge 3 with new value 6.93008362905232e-21 which without averaging is 0.0 and cellwise_update_rate 0.9970030188560486 and cellwise_importance_power 3 and momentum 0.02423863671720028
+the maximum importance sampled is 0.4943615794181824.
+ [inter_level_importance]: cell 0 is updating its edge 1 with new value 3.790332936404184e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.02708883211016655
+ [remove_empty_importance]: cell 0 is updating its edge 1 with new value 0.011770580895245075 which without averaging is 0.011792954988777637 and cellwise_update_rate 0.0009845035383477807 and cellwise_importance_power 6920 and momentum 0.02708883211016655
+the maximum importance sampled is 0.4943615794181824.
+ [inter_level_importance]: cell 8 is updating its edge 1 with new value 0.4295255243778229 which without averaging is 0.2838761508464813 and cellwise_update_rate 0.9654635190963745 and cellwise_importance_power 35.12982177734375 and momentum 0.03594924882054329
+ [remove_empty_importance]: cell 8 is updating its edge 1 with new value 0.5838541984558105 which without averaging is 0.5838722586631775 and cellwise_update_rate 3.643505260697566e-05 and cellwise_importance_power 10215 and momentum 0.03594924882054329
+the maximum importance sampled is 0.4943615794181824.
+ [inter_level_importance]: cell 7 is updating its edge 3 with new value 0.3946954309940338 which without averaging is 0.019226035103201866 and cellwise_update_rate 0.97593092918396 and cellwise_importance_power 24.351619720458984 and momentum 0.04366007447242737
+ [remove_empty_importance]: cell 7 is updating its edge 3 with new value 0.0843612477183342 which without averaging is 0.0843612551689148 and cellwise_update_rate 8.6624763555288e-15 and cellwise_importance_power 32364 and momentum 0.04366007447242737
+the maximum importance sampled is 0.589291512966156.
+ [inter_level_importance]: cell 4 is updating its edge 2 with new value 4.975784229088731e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.0328206941485405
+ [remove_empty_importance]: cell 4 is updating its edge 2 with new value 3.473501735578593e-22 which without averaging is 0.0 and cellwise_update_rate 0.9762742519378662 and cellwise_importance_power 24 and momentum 0.0328206941485405
+the maximum importance sampled is 0.589291512966156.
+ [inter_level_importance]: cell 0 is updating its edge 1 with new value 3.032263551361325e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.03446754068136215
+ [remove_empty_importance]: cell 0 is updating its edge 1 with new value 0.13880416750907898 which without averaging is 0.13901281356811523 and cellwise_update_rate 0.0010257274843752384 and cellwise_importance_power 6879 and momentum 0.03446754068136215
+the maximum importance sampled is 0.589291512966156.
+the maximum importance sampled is 0.589291512966156.
+the maximum importance sampled is 0.589291512966156.
+the maximum importance sampled is 0.589291512966156.
+the maximum importance sampled is 0.589291512966156.
+the maximum importance sampled is 0.589291512966156.
+the maximum importance sampled is 0.589291512966156.
+ [inter_level_importance]: cell 8 is updating its edge 5 with new value 0.00031489404500462115 which without averaging is 0.048511188477277756 and cellwise_update_rate 0.9945198893547058 and cellwise_importance_power 5.49244499206543 and momentum 0.028922749683260918
+ [remove_empty_importance]: cell 8 is updating its edge 5 with new value 0.48156511783599854 which without averaging is 0.4816058874130249 and cellwise_update_rate 5.703981878468767e-05 and cellwise_importance_power 9767 and momentum 0.028922749683260918
+the maximum importance sampled is 0.589291512966156.
+ [inter_level_importance]: cell 7 is updating its edge 1 with new value 0.06639309227466583 which without averaging is 0.05987361818552017 and cellwise_update_rate 0.9706463813781738 and cellwise_importance_power 29.778568267822266 and momentum 0.023669730871915817
+ [remove_empty_importance]: cell 7 is updating its edge 1 with new value 0.21069905161857605 which without averaging is 0.21069905161857605 and cellwise_update_rate 5.887388473735161e-15 and cellwise_importance_power 32750 and momentum 0.023669730871915817
+the maximum importance sampled is 1.0923579931259155.
+ [inter_level_importance]: cell 4 is updating its edge 2 with new value 4.975784229088731e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.03334236890077591
+ [remove_empty_importance]: cell 4 is updating its edge 2 with new value 6.730897487417914e-21 which without averaging is 0.553241491317749 and cellwise_update_rate 0.9890549182891846 and cellwise_importance_power 11 and momentum 0.03334236890077591
+the maximum importance sampled is 0.6497790813446045.
+ [inter_level_importance]: cell 0 is updating its edge 1 with new value 2.4258084430073268e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.039577923715114594
+ [remove_empty_importance]: cell 0 is updating its edge 1 with new value 0.05654799938201904 which without averaging is 0.05657452717423439 and cellwise_update_rate 0.0008713798597455025 and cellwise_importance_power 7042 and momentum 0.039577923715114594
+the maximum importance sampled is 0.6497790813446045.
+ [inter_level_importance]: cell 8 is updating its edge 3 with new value 0.3330022394657135 which without averaging is 0.21172484755516052 and cellwise_update_rate 0.9919586777687073 and cellwise_importance_power 8.069808959960938 and momentum 0.03551144152879715
+ [remove_empty_importance]: cell 8 is updating its edge 3 with new value 0.15949197113513947 which without averaging is 0.15948131680488586 and cellwise_update_rate 6.877503619762138e-05 and cellwise_importance_power 9580 and momentum 0.03551144152879715
+the maximum importance sampled is 0.6497790813446045.
+ [inter_level_importance]: cell 7 is updating its edge 4 with new value 0.18534697592258453 which without averaging is 0.15344862639904022 and cellwise_update_rate 0.8718594312667847 and cellwise_importance_power 137.06024169921875 and momentum 0.03818688541650772
+ [remove_empty_importance]: cell 7 is updating its edge 4 with new value 0.17895346879959106 which without averaging is 0.17895348370075226 and cellwise_update_rate 2.8023288848938108e-15 and cellwise_importance_power 33492 and momentum 0.03818688541650772
+the maximum importance sampled is 0.6497790813446045.
+ [inter_level_importance]: cell 4 is updating its edge 5 with new value 4.15068068804203e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.03913681581616402
+ [remove_empty_importance]: cell 4 is updating its edge 5 with new value 7.411419542820787e-21 which without averaging is 0.0 and cellwise_update_rate 0.998000979423523 and cellwise_importance_power 2 and momentum 0.03913681581616402
+the maximum importance sampled is 0.6497790813446045.
+ [inter_level_importance]: cell 0 is updating its edge 1 with new value 1.940644978049022e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.028604967519640923
+ [remove_empty_importance]: cell 0 is updating its edge 1 with new value 0.10076496005058289 which without averaging is 0.10099535435438156 and cellwise_update_rate 0.0006894980906508863 and cellwise_importance_power 7276 and momentum 0.028604967519640923
+an additional 4 cells will be added.
+updating: cell 17 edge 32 point 10.
+the maximum importance sampled is 9.910453790951124e-09.
+the maximum importance sampled is 9.910453790951124e-09.
+the maximum importance sampled is 9.910453790951124e-09.
+the maximum importance sampled is 9.910453790951124e-09.
+the maximum importance sampled is 9.910453790951124e-09.
+the maximum importance sampled is 9.910453790951124e-09.
+the maximum importance sampled is 9.4196899169674e-09.
+the maximum importance sampled is 0.2873663008213043.
+ [inter_level_importance]: cell 14 is updating its edge 5 with new value 9.014708091115153e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 3.814797310042195e-06 and momentum 0.02629990316927433
+ [remove_empty_importance]: cell 14 is updating its edge 5 with new value 0.10318823903799057 which without averaging is 0.19679592549800873 and cellwise_update_rate 0.2598484754562378 and cellwise_importance_power 1347 and momentum 0.02629990316927433
+the maximum importance sampled is 0.24871213734149933.
+ [inter_level_importance]: cell 15 is updating its edge 5 with new value 4.776092410452293e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 7.629494575667195e-06 and momentum 0.029916180297732353
+ [remove_empty_importance]: cell 15 is updating its edge 5 with new value 0.30258646607398987 which without averaging is 0.15983723104000092 and cellwise_update_rate 0.38811206817626953 and cellwise_importance_power 946 and momentum 0.029916180297732353
+the maximum importance sampled is 0.24871213734149933.
+ [inter_level_importance]: cell 16 is updating its edge 5 with new value 9.840052825893508e-07 which without averaging is 0.056686289608478546 and cellwise_update_rate 0.993321418762207 and cellwise_importance_power 6.697725296020508 and momentum 0.030164306983351707
+ [remove_empty_importance]: cell 16 is updating its edge 5 with new value 0.189472496509552 which without averaging is 0.189500093460083 and cellwise_update_rate 0.0001752645621309057 and cellwise_importance_power 8645 and momentum 0.030164306983351707
+the maximum importance sampled is 0.24871213734149933.
+ [inter_level_importance]: cell 0 is updating its edge 1 with new value 1.5525172258890052e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.029530532658100128
+ [remove_empty_importance]: cell 0 is updating its edge 1 with new value 0.005673297680914402 which without averaging is 0.0056606475263834 and cellwise_update_rate 0.0006307568401098251 and cellwise_importance_power 7365 and momentum 0.029530532658100128
+the maximum importance sampled is 0.35021907091140747.
+ [inter_level_importance]: cell 4 is updating its edge 5 with new value 4.15068068804203e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.0381307378411293
+ [remove_empty_importance]: cell 4 is updating its edge 5 with new value 4.111395252178841e-20 which without averaging is 0.0 and cellwise_update_rate 0.9970030188560486 and cellwise_importance_power 3 and momentum 0.0381307378411293
+the maximum importance sampled is 0.3223585784435272.
+ [inter_level_importance]: cell 15 is updating its edge 5 with new value 4.776092410452293e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.037388261407613754
+ [remove_empty_importance]: cell 15 is updating its edge 5 with new value 0.7899694442749023 which without averaging is 1.259058952331543 and cellwise_update_rate 0.526074230670929 and cellwise_importance_power 642 and momentum 0.037388261407613754
+the maximum importance sampled is 0.4241863489151001.
+ [inter_level_importance]: cell 16 is updating its edge 1 with new value 0.180315300822258 which without averaging is 0.09553452581167221 and cellwise_update_rate 0.9915675520896912 and cellwise_importance_power 8.46405029296875 and momentum 0.0507991686463356
+ [remove_empty_importance]: cell 16 is updating its edge 1 with new value 0.534357488155365 which without averaging is 0.5344515442848206 and cellwise_update_rate 0.00010058730549644679 and cellwise_importance_power 9200 and momentum 0.0507991686463356
+the maximum importance sampled is 0.34256988763809204.
+ [inter_level_importance]: cell 15 is updating its edge 0 with new value 7.4973414143642e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.05494571477174759
+ [remove_empty_importance]: cell 15 is updating its edge 0 with new value 0.5706102252006531 which without averaging is 1.659696102142334 and cellwise_update_rate 0.5653682947158813 and cellwise_importance_power 570 and momentum 0.05494571477174759
+the maximum importance sampled is 0.34256988763809204.
+the maximum importance sampled is 0.34256988763809204.
+the maximum importance sampled is 0.34256988763809204.
+the maximum importance sampled is 0.34256988763809204.
+the maximum importance sampled is 0.34256988763809204.
+the maximum importance sampled is 0.34256988763809204.
+the maximum importance sampled is 0.34256988763809204.
+ [inter_level_importance]: cell 16 is updating its edge 4 with new value 6.8799739239011615e-09 which without averaging is 0.01786014810204506 and cellwise_update_rate 0.997780442237854 and cellwise_importance_power 2.2209320068359375 and momentum 0.04958494007587433
+ [remove_empty_importance]: cell 16 is updating its edge 4 with new value 0.15226717293262482 which without averaging is 0.15225279331207275 and cellwise_update_rate 0.00013099442003294826 and cellwise_importance_power 8936 and momentum 0.04958494007587433
+the maximum importance sampled is 0.34256988763809204.
+ [inter_level_importance]: cell 0 is updating its edge 1 with new value 1.242012603874798e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.04227367043495178
+ [remove_empty_importance]: cell 0 is updating its edge 1 with new value 0.17493563890457153 which without averaging is 0.17511506378650665 and cellwise_update_rate 0.0009096854482777417 and cellwise_importance_power 6999 and momentum 0.04227367043495178
+the maximum importance sampled is 0.34256988763809204.
+ [inter_level_importance]: cell 4 is updating its edge 0 with new value 4.870645220478309e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.035735808312892914
+ [remove_empty_importance]: cell 4 is updating its edge 0 with new value 1.2570725322207074e-24 which without averaging is 0.0 and cellwise_update_rate 0.9900449514389038 and cellwise_importance_power 10 and momentum 0.035735808312892914
+the maximum importance sampled is 0.4868405759334564.
+ [inter_level_importance]: cell 13 is updating its edge 5 with new value 0.2450830489397049 which without averaging is 0.2839064598083496 and cellwise_update_rate 0.6991616487503052 and cellwise_importance_power 357.69891357421875 and momentum 0.05112914741039276
+ [remove_empty_importance]: cell 13 is updating its edge 5 with new value 0.5107425451278687 which without averaging is 0.5107425451278687 and cellwise_update_rate 1.2294736592471846e-14 and cellwise_importance_power 32014 and momentum 0.05112914741039276
+the maximum importance sampled is 0.3616591989994049.
+ [inter_level_importance]: cell 14 is updating its edge 2 with new value 2.8939217341927836e-11 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.039585575461387634
+ [remove_empty_importance]: cell 14 is updating its edge 2 with new value 0.5764586925506592 which without averaging is 0.48638153076171875 and cellwise_update_rate 0.20499449968338013 and cellwise_importance_power 1584 and momentum 0.039585575461387634
+the maximum importance sampled is 0.3616591989994049.
+ [inter_level_importance]: cell 15 is updating its edge 2 with new value 4.2669032196407386e-10 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.029316335916519165
+ [remove_empty_importance]: cell 15 is updating its edge 2 with new value 0.07537630200386047 which without averaging is 0.009448287077248096 and cellwise_update_rate 0.44025564193725586 and cellwise_importance_power 820 and momentum 0.029316335916519165
+the maximum importance sampled is 0.3521305322647095.
+ [inter_level_importance]: cell 16 is updating its edge 1 with new value 0.25082460045814514 which without averaging is 0.08990546315908432 and cellwise_update_rate 0.9965051412582397 and cellwise_importance_power 3.4992523193359375 and momentum 0.0310759786516428
+ [remove_empty_importance]: cell 16 is updating its edge 1 with new value 0.0217114444822073 which without averaging is 0.021703122183680534 and cellwise_update_rate 0.00012969037925358862 and cellwise_importance_power 8946 and momentum 0.0310759786516428
+the maximum importance sampled is 0.4126688241958618.
+ [inter_level_importance]: cell 0 is updating its edge 1 with new value 9.936091949214187e-10 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.043255943804979324
+ [remove_empty_importance]: cell 0 is updating its edge 1 with new value 0.6089566946029663 which without averaging is 0.610429048538208 and cellwise_update_rate 0.0006301262183114886 and cellwise_importance_power 7366 and momentum 0.043255943804979324
+an additional 10 cells will be added.
+updating: cell 27 edge 43 point 12.
+the maximum importance sampled is 9.63125312836155e-09.
+the maximum importance sampled is 9.63125312836155e-09.
+the maximum importance sampled is 9.63125312836155e-09.
+the maximum importance sampled is 9.63125312836155e-09.
+the maximum importance sampled is 9.63125312836155e-09.
+the maximum importance sampled is 9.63125312836155e-09.
+the maximum importance sampled is 0.014947605319321156.
+ [inter_level_importance]: cell 25 is updating its edge 0 with new value 5.994779783691229e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.04259682446718216
+ [remove_empty_importance]: cell 25 is updating its edge 0 with new value 2.261742115020752 which without averaging is 2.458710193634033 and cellwise_update_rate 0.6569122672080994 and cellwise_importance_power 420 and momentum 0.04259682446718216
+the maximum importance sampled is 0.32597726583480835.
+ [inter_level_importance]: cell 18 is updating its edge 1 with new value 7.236999888249329e-10 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.04729932174086571
+ [remove_empty_importance]: cell 18 is updating its edge 1 with new value 1.2543939631328305e-18 which without averaging is 0.0 and cellwise_update_rate 0.9940150380134583 and cellwise_importance_power 6 and momentum 0.04729932174086571
+the maximum importance sampled is 0.5371249914169312.
+ [inter_level_importance]: cell 24 is updating its edge 0 with new value 3.0295466135754623e-09 which without averaging is 0.06249836087226868 and cellwise_update_rate 1.0 and cellwise_importance_power 3.814797310042195e-06 and momentum 0.05869632586836815
+ [remove_empty_importance]: cell 24 is updating its edge 0 with new value 0.3040667772293091 which without averaging is 0.3025662899017334 and cellwise_update_rate 0.037718791514635086 and cellwise_importance_power 3276 and momentum 0.05869632586836815
+the maximum importance sampled is 0.19269773364067078.
+ [inter_level_importance]: cell 14 is updating its edge 4 with new value 4.346119020226524e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.0576937161386013
+ [remove_empty_importance]: cell 14 is updating its edge 4 with new value 0.2043577879667282 which without averaging is 0.08122273534536362 and cellwise_update_rate 0.3086421489715576 and cellwise_importance_power 1175 and momentum 0.0576937161386013
+the maximum importance sampled is 0.2722996473312378.
+ [inter_level_importance]: cell 23 is updating its edge 2 with new value 9.600867656445189e-09 which without averaging is 0.0033790450543165207 and cellwise_update_rate 0.9998452663421631 and cellwise_importance_power 0.1546630859375 and momentum 0.05428595095872879
+ [remove_empty_importance]: cell 23 is updating its edge 2 with new value 0.17850948870182037 which without averaging is 0.17886796593666077 and cellwise_update_rate 0.008744685910642147 and cellwise_importance_power 4737 and momentum 0.05428595095872879
+the maximum importance sampled is 0.2722996473312378.
+ [inter_level_importance]: cell 0 is updating its edge 1 with new value 7.94887988764259e-10 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.0435505285859108
+ [remove_empty_importance]: cell 0 is updating its edge 1 with new value 0.3898831009864807 which without averaging is 0.3899743854999542 and cellwise_update_rate 0.00044219347182661295 and cellwise_importance_power 7720 and momentum 0.0435505285859108
+the maximum importance sampled is 0.2722996473312378.
+ [inter_level_importance]: cell 14 is updating its edge 4 with new value 4.346119020226524e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.036833859980106354
+ [remove_empty_importance]: cell 14 is updating its edge 4 with new value 0.12429443001747131 which without averaging is 0.07541932165622711 and cellwise_update_rate 0.3043491542339325 and cellwise_importance_power 1189 and momentum 0.036833859980106354
+the maximum importance sampled is 0.2722996473312378.
+ [inter_level_importance]: cell 26 is updating its edge 4 with new value 1.0153188290118464e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.037716448307037354
+ [remove_empty_importance]: cell 26 is updating its edge 4 with new value 2.9464011192321777 which without averaging is 3.902472496032715 and cellwise_update_rate 0.852077305316925 and cellwise_importance_power 160 and momentum 0.037716448307037354
+the maximum importance sampled is 0.2722996473312378.
+the maximum importance sampled is 0.2722996473312378.
+the maximum importance sampled is 0.2722996473312378.
+the maximum importance sampled is 0.2722996473312378.
+the maximum importance sampled is 0.2722996473312378.
+the maximum importance sampled is 0.2722996473312378.
+the maximum importance sampled is 0.2722996473312378.
+ [inter_level_importance]: cell 26 is updating its edge 4 with new value 1.0153188290118464e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.037239402532577515
+ [remove_empty_importance]: cell 26 is updating its edge 4 with new value 1.798290782062395e-06 which without averaging is 0.013561340980231762 and cellwise_update_rate 0.6279927492141724 and cellwise_importance_power 465 and momentum 0.037239402532577515
+the maximum importance sampled is 0.2722996473312378.
+ [inter_level_importance]: cell 25 is updating its edge 4 with new value 9.673491341288809e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.04761992022395134
+ [remove_empty_importance]: cell 25 is updating its edge 4 with new value 5.704480171203613 which without averaging is 3.5533194541931152 and cellwise_update_rate 0.6477751731872559 and cellwise_importance_power 434 and momentum 0.04761992022395134
+the maximum importance sampled is 0.505283772945404.
+ [inter_level_importance]: cell 18 is updating its edge 5 with new value 1.763960089107286e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.030383141711354256
+ [remove_empty_importance]: cell 18 is updating its edge 5 with new value 4.9359615216318033e-20 which without averaging is 133.87063598632812 and cellwise_update_rate 0.9890549182891846 and cellwise_importance_power 11 and momentum 0.030383141711354256
+the maximum importance sampled is 0.505283772945404.
+ [inter_level_importance]: cell 24 is updating its edge 4 with new value 8.745757895667339e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.03443434089422226
+ [remove_empty_importance]: cell 24 is updating its edge 4 with new value 0.43207302689552307 which without averaging is 0.41345590353012085 and cellwise_update_rate 0.0222847368568182 and cellwise_importance_power 3802 and momentum 0.03443434089422226
+the maximum importance sampled is 0.505283772945404.
+ [inter_level_importance]: cell 14 is updating its edge 3 with new value 8.017235764157249e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.04177406430244446
+ [remove_empty_importance]: cell 14 is updating its edge 3 with new value 0.15447460114955902 which without averaging is 2.223914861679077 and cellwise_update_rate 0.3117455542087555 and cellwise_importance_power 1165 and momentum 0.04177406430244446
+the maximum importance sampled is 0.505283772945404.
+ [inter_level_importance]: cell 23 is updating its edge 0 with new value 0.2942485809326172 which without averaging is 0.09287042915821075 and cellwise_update_rate 0.9930097460746765 and cellwise_importance_power 7.011417388916016 and momentum 0.0421312041580677
+ [remove_empty_importance]: cell 23 is updating its edge 0 with new value 1.653125524520874 which without averaging is 1.6516952514648438 and cellwise_update_rate 0.0034903385676443577 and cellwise_importance_power 5655 and momentum 0.0421312041580677
+the maximum importance sampled is 0.505283772945404.
+ [inter_level_importance]: cell 0 is updating its edge 1 with new value 5.087283372340323e-10 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.03720630332827568
+ [remove_empty_importance]: cell 0 is updating its edge 1 with new value 0.1691005825996399 which without averaging is 0.1691901981830597 and cellwise_update_rate 0.000504623050801456 and cellwise_importance_power 7588 and momentum 0.03720630332827568
+the maximum importance sampled is 0.505283772945404.
+ [inter_level_importance]: cell 22 is updating its edge 4 with new value 0.2714015245437622 which without averaging is 0.024107880890369415 and cellwise_update_rate 0.9961339831352234 and cellwise_importance_power 3.8715667724609375 and momentum 0.04862237721681595
+ [remove_empty_importance]: cell 22 is updating its edge 4 with new value 0.34455230832099915 which without averaging is 0.34455767273902893 and cellwise_update_rate 2.888776725740172e-05 and cellwise_importance_power 10447 and momentum 0.04862237721681595
+an additional 8 cells will be added.
+updating: cell 35 edge 50 point 13.
+the maximum importance sampled is 0.2714015245437622.
+the maximum importance sampled is 0.2714015245437622.
+the maximum importance sampled is 0.2714015245437622.
+the maximum importance sampled is 0.2714015245437622.
+the maximum importance sampled is 0.2714015245437622.
+the maximum importance sampled is 0.2714015245437622.
+the maximum importance sampled is 0.2714015245437622.
+the maximum importance sampled is 0.26264145970344543.
+ [inter_level_importance]: cell 33 is updating its edge 0 with new value 1.9701157327745022e-07 which without averaging is 0.0030456853564828634 and cellwise_update_rate 0.9999699592590332 and cellwise_importance_power 0.030059814453125 and momentum 0.05559048056602478
+ [remove_empty_importance]: cell 33 is updating its edge 0 with new value 1.4728779792785645 which without averaging is 0.7552131414413452 and cellwise_update_rate 0.4272378385066986 and cellwise_importance_power 850 and momentum 0.05559048056602478
+the maximum importance sampled is 0.2384650707244873.
+ [inter_level_importance]: cell 0 is updating its edge 1 with new value 4.0698228120916724e-10 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.04892515018582344
+ [remove_empty_importance]: cell 0 is updating its edge 1 with new value 1.8648124933242798 which without averaging is 1.86712646484375 and cellwise_update_rate 0.0008430799935013056 and cellwise_importance_power 7075 and momentum 0.04892515018582344
+the maximum importance sampled is 0.2384650707244873.
+ [inter_level_importance]: cell 18 is updating its edge 4 with new value 6.841814226277165e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.060065824538469315
+ [remove_empty_importance]: cell 18 is updating its edge 4 with new value 8.745492395778475e-20 which without averaging is 0.0 and cellwise_update_rate 0.9821524024009705 and cellwise_importance_power 18 and momentum 0.060065824538469315
+the maximum importance sampled is 0.23953983187675476.
+ [inter_level_importance]: cell 24 is updating its edge 2 with new value 6.206298142075184e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.0490247868001461
+ [remove_empty_importance]: cell 24 is updating its edge 2 with new value 0.6817021369934082 which without averaging is 0.694776177406311 and cellwise_update_rate 0.027771471068263054 and cellwise_importance_power 3582 and momentum 0.0490247868001461
+the maximum importance sampled is 0.23953983187675476.
+ [inter_level_importance]: cell 26 is updating its edge 0 with new value 1.79394399335564e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.04289698600769043
+ [remove_empty_importance]: cell 26 is updating its edge 0 with new value 0.16432569921016693 which without averaging is 0.0285206101834774 and cellwise_update_rate 0.7173712253570557 and cellwise_importance_power 332 and momentum 0.04289698600769043
+the maximum importance sampled is 0.23953983187675476.
+ [inter_level_importance]: cell 32 is updating its edge 3 with new value 0.14652033150196075 which without averaging is 0.07477962970733643 and cellwise_update_rate 0.9585346579551697 and cellwise_importance_power 42.32887649536133 and momentum 0.04312558472156525
+ [remove_empty_importance]: cell 32 is updating its edge 3 with new value 0.4982250928878784 which without averaging is 0.49822506308555603 and cellwise_update_rate 4.9852754813173306e-08 and cellwise_importance_power 16806 and momentum 0.04312558472156525
+the maximum importance sampled is 0.23953983187675476.
+ [inter_level_importance]: cell 34 is updating its edge 2 with new value 7.429511015288881e-07 which without averaging is 0.01670762524008751 and cellwise_update_rate 0.9997919201850891 and cellwise_importance_power 0.20800018310546875 and momentum 0.043069709092378616
+ [remove_empty_importance]: cell 34 is updating its edge 2 with new value 0.2515553832054138 which without averaging is 0.24862098693847656 and cellwise_update_rate 0.01107357069849968 and cellwise_importance_power 4501 and momentum 0.043069709092378616
+the maximum importance sampled is 0.23953983187675476.
+ [inter_level_importance]: cell 14 is updating its edge 1 with new value 4.412674670106753e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.04702415689826012
+ [remove_empty_importance]: cell 14 is updating its edge 1 with new value 0.27386850118637085 which without averaging is 0.2226760983467102 and cellwise_update_rate 0.2601085901260376 and cellwise_importance_power 1346 and momentum 0.04702415689826012
+the maximum importance sampled is 0.23953983187675476.
+the maximum importance sampled is 0.23953983187675476.
+the maximum importance sampled is 0.23953983187675476.
+the maximum importance sampled is 0.23953983187675476.
+the maximum importance sampled is 0.23953983187675476.
+the maximum importance sampled is 0.23953983187675476.
+the maximum importance sampled is 0.23953983187675476.
+ [inter_level_importance]: cell 22 is updating its edge 5 with new value 2.4889459382393397e-06 which without averaging is 0.03244533762335777 and cellwise_update_rate 0.9957960844039917 and cellwise_importance_power 4.210657119750977 and momentum 0.0453798808157444
+ [remove_empty_importance]: cell 22 is updating its edge 5 with new value 0.0015619018813595176 which without averaging is 0.0015612482093274593 and cellwise_update_rate 5.972627695882693e-05 and cellwise_importance_power 9721 and momentum 0.0453798808157444
+the maximum importance sampled is 0.2513456642627716.
+ [inter_level_importance]: cell 25 is updating its edge 2 with new value 7.192665574251578e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.05444332957267761
+ [remove_empty_importance]: cell 25 is updating its edge 2 with new value 0.16633614897727966 which without averaging is 0.0020534300711005926 and cellwise_update_rate 0.5750665664672852 and cellwise_importance_power 553 and momentum 0.05444332957267761
+the maximum importance sampled is 0.23953983187675476.
+ [inter_level_importance]: cell 26 is updating its edge 0 with new value 1.79394399335564e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.04501769319176674
+ [remove_empty_importance]: cell 26 is updating its edge 0 with new value 0.012327113188803196 which without averaging is 1.1750469207763672 and cellwise_update_rate 0.6595465540885925 and cellwise_importance_power 416 and momentum 0.04501769319176674
+the maximum importance sampled is 0.7041388154029846.
+ [inter_level_importance]: cell 31 is updating its edge 5 with new value 0.4816962778568268 which without averaging is 0.27871283888816833 and cellwise_update_rate 0.9200584888458252 and cellwise_importance_power 83.2774429321289 and momentum 0.061056118458509445
+ [remove_empty_importance]: cell 31 is updating its edge 5 with new value 3.3125503063201904 which without averaging is 3.4001033306121826 and cellwise_update_rate 0.020591193810105324 and cellwise_importance_power 3881 and momentum 0.061056118458509445
+the maximum importance sampled is 0.4816962778568268.
+ [inter_level_importance]: cell 0 is updating its edge 1 with new value 2.604686188956151e-10 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.055223241448402405
+ [remove_empty_importance]: cell 0 is updating its edge 1 with new value 0.9461355209350586 which without averaging is 0.9476934671401978 and cellwise_update_rate 0.0004110487934667617 and cellwise_importance_power 7793 and momentum 0.055223241448402405
+the maximum importance sampled is 0.4816962778568268.
+ [inter_level_importance]: cell 18 is updating its edge 5 with new value 1.763960089107286e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.07012377679347992
+ [remove_empty_importance]: cell 18 is updating its edge 5 with new value 4.935977758282499e-21 which without averaging is 8.294395446777344 and cellwise_update_rate 0.9900449514389038 and cellwise_importance_power 10 and momentum 0.07012377679347992
+the maximum importance sampled is 0.4816962778568268.
+ [inter_level_importance]: cell 24 is updating its edge 4 with new value 8.745757895667339e-09 which without averaging is 0.14551915228366852 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.04762979596853256
+ [remove_empty_importance]: cell 24 is updating its edge 4 with new value 1.1827298402786255 which without averaging is 1.1508500576019287 and cellwise_update_rate 0.033284686505794525 and cellwise_importance_power 3401 and momentum 0.04762979596853256
+the maximum importance sampled is 0.5226884484291077.
+ [inter_level_importance]: cell 26 is updating its edge 2 with new value 4.5297254835929834e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.06429789215326309
+ [remove_empty_importance]: cell 26 is updating its edge 2 with new value 2.6154680252075195 which without averaging is 0.8883945345878601 and cellwise_update_rate 0.8000279068946838 and cellwise_importance_power 223 and momentum 0.06429789215326309
+an additional 12 cells will be added.
+updating: cell 47 edge 62 point 15.
+the maximum importance sampled is 0.23477858304977417.
+the maximum importance sampled is 0.23477858304977417.
+the maximum importance sampled is 0.23477858304977417.
+the maximum importance sampled is 0.23477858304977417.
+the maximum importance sampled is 0.23477858304977417.
+the maximum importance sampled is 0.23477858304977417.
+the maximum importance sampled is 0.2213931679725647.
+ [inter_level_importance]: cell 25 is updating its edge 5 with new value 2.3233566182057075e-09 which without averaging is 1.1641532182693481 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.05262158066034317
+ [remove_empty_importance]: cell 25 is updating its edge 5 with new value 1.5319985151290894 which without averaging is 1.3427249193191528 and cellwise_update_rate 0.5676354169845581 and cellwise_importance_power 566 and momentum 0.05262158066034317
+the maximum importance sampled is 0.2213931679725647.
+ [inter_level_importance]: cell 32 is updating its edge 1 with new value 0.0641394555568695 which without averaging is 0.04161228612065315 and cellwise_update_rate 0.9833083152770996 and cellwise_importance_power 16.824342727661133 and momentum 0.051424190402030945
+ [remove_empty_importance]: cell 32 is updating its edge 1 with new value 2.653521776199341 which without averaging is 2.65352201461792 and cellwise_update_rate 3.165362016943618e-08 and cellwise_importance_power 17260 and momentum 0.051424190402030945
+the maximum importance sampled is 0.43000301718711853.
+ [inter_level_importance]: cell 36 is updating its edge 2 with new value 3.13489145753465e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.000000013351432e-10 and momentum 0.05443403497338295
+ [remove_empty_importance]: cell 36 is updating its edge 2 with new value 2.6797103881835938 which without averaging is 7.298761367797852 and cellwise_update_rate 0.25444597005844116 and cellwise_importance_power 1368 and momentum 0.05443403497338295
+the maximum importance sampled is 0.2213931679725647.
+ [inter_level_importance]: cell 37 is updating its edge 0 with new value 1.4607302922797771e-08 which without averaging is 0.09833990037441254 and cellwise_update_rate 0.9987364411354065 and cellwise_importance_power 1.2637748718261719 and momentum 0.05797601863741875
+ [remove_empty_importance]: cell 37 is updating its edge 0 with new value 0.6775200963020325 which without averaging is 1.0733182430267334 and cellwise_update_rate 0.25932905077934265 and cellwise_importance_power 1349 and momentum 0.05797601863741875
+the maximum importance sampled is 0.2213931679725647.
+ [inter_level_importance]: cell 39 is updating its edge 3 with new value 9.436509351701261e-09 which without averaging is 0.0 and cellwise_update_rate 1.0 and cellwise_importance_power 1.1930929133541213e-07 and momentum 0.05509456992149353
+ [remove_empty_importance]: cell 39 is updating its edge 3 with new value 0.6760036945343018 which without averaging is 0.6684576869010925 and cellwise_update_rate 0.03545017167925835 and cellwise_importance_power 3338 and momentum 0.05509456992149353
+the maximum importance sampled is 0.36761555075645447.
