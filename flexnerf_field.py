@@ -20,7 +20,8 @@ from nerfstudio.field_components.mlp import MLP
 from nerfstudio.field_components.spatial_distortions import SpatialDistortion
 from nerfstudio.fields.base_field import Field, get_normalized_directions
 
-from .utils import exponential_update
+import flexnerf.utils as utils
+from .utils import exponential_update, set_requires_grad
 
 DIY = False
 DEBUG = True
@@ -202,11 +203,11 @@ class MultiLayerTetra(nn.Module):
 
         # !note: registering stop here, organize the first layer of tree and try sampling
         self.organize_layer_0()
-        self.refine_samples(0, update_original=True, start_step=0)
+        self.refine_samples(0, update_original=True, start_step=0, initializing=True)
         self.sorted_edge_offset = None
 
     @torch.inference_mode()
-    def refine_samples(self, step, update_original=True, use_inter_level_importance=True, start_step=0):
+    def refine_samples(self, step, update_original=True, use_inter_level_importance=True, start_step=0, initializing=False):
         if step != 0 and step < start_step or step > 50000:
             return
         use_inter_level_importance = (step//1600%2 == 0)
@@ -215,6 +216,8 @@ class MultiLayerTetra(nn.Module):
         # TODO: check boundaries, no to exceed the `max_??_count`, especially for sample_extend. Note, merge_extend lack 1 positional argument for that reason. temporarily set it to be 2. Note, this value means how many parent cells will be divided, so the actual increased cell number is at most twice the value
         if update_original:
             self.merge_extend(torch.tensor(16, dtype=torch.int64))
+            if not initializing:
+                utils.reset_global_optimizers()
         edge_valid = self.sample_extend()
         self.apply_sampled(edge_valid)
         if update_original and DEBUG:
@@ -247,8 +250,7 @@ class MultiLayerTetra(nn.Module):
         else:
             cells = self.search_extend(xyz, cells)
             extend_cell_id = cells["cell_id"]
-            extend_point_id = self.point_index[extend_cell_id, :]
-            cells["feature"] = self.field[extend_point_id, :]
+            self.gather_info_from_cell_id(extend_cell_id, cells)
             extend_feature = interpolate_field_value(xyz, cells)
             #? possibly not necessary to pass all the three values all the time?
             return feature, extend_feature, old_feature, cell_id, extend_cell_id, importance
@@ -265,6 +267,9 @@ class MultiLayerTetra(nn.Module):
             cells_dict["feature"] = self.field[point_id, :]
         if "cut" not in cells_dict:
             cells_dict["cut"] = self.child_cut[cell_id, :]
+        #* a new feature, blocking gradients from passing to original points. Only gradients of extend points can be utilized.
+        if "update_point_mask" in cells_dict:
+            cells_dict["feature"] = torch.where(cells_dict["update_point_mask"][:,:,None], cells_dict["feature"], cells_dict["feature"].detach())
         return
 
     # @torch.inference_mode()
@@ -497,7 +502,7 @@ class MultiLayerTetra(nn.Module):
                 "cut":              cut, 
                 "activation_layer": activation_layer}
 
-    def search_layer_i(self, xyz, parent_cells, i):
+    def search_layer_i(self, xyz, parent_cells, i, return_update_point_mask=False):
         sample_num = xyz.shape[0]
 
         parent_id = parent_cells["cell_id"]
@@ -535,13 +540,18 @@ class MultiLayerTetra(nn.Module):
         child_cut              = torch.where(child_valid.view(-1,1),   child_cut,              parent_cut)
         child_activation_layer = torch.where(child_valid,              child_activation_layer, parent_activation_layer)
 
-        return {"cell_id":          child_cell_id, 
-                "xyz":              child_xyz, 
-                "cut":              child_cut, 
-                "activation_layer": child_activation_layer}
+        return_dict = {"cell_id":          child_cell_id, 
+                       "xyz":              child_xyz, 
+                       "cut":              child_cut, 
+                       "activation_layer": child_activation_layer}
+        if return_update_point_mask:
+            update_point_mask = torch.zeros(sample_num, 4, dtype=torch.bool, device=xyz.device)
+            update_point_mask.scatter_(1, abandoned_vertex[:,None].long()%4, abandoned_vertex[:,None] != -1)
+            return_dict["update_point_mask"] = update_point_mask
+        return return_dict
 
     def search_extend(self, xyz, cells):
-        cells = self.search_layer_i(xyz, cells, self.max_layer_num)
+        cells = self.search_layer_i(xyz, cells, self.max_layer_num, return_update_point_mask=True)
         return cells
 
     @torch.inference_mode()
@@ -1099,8 +1109,12 @@ class FlexNerfField(Field):
             return density, base_mlp_out
 
         density, density_embedding = feature2out(feature)
-        extend_density, extend_density_embedding = feature2out(extend_feature)
         old_density, old_density_embedding = feature2out(old_feature)
+        # block gradients passing through extend loss to the network
+        set_requires_grad(self.mlp_base_mlp, False)
+        extend_density, extend_density_embedding = feature2out(extend_feature)
+        set_requires_grad(self.mlp_base_mlp, True)
+
         cell_id = cell_id.view(*ray_samples.frustums.shape, -1)
         extend_cell_id = extend_cell_id.view(*ray_samples.frustums.shape, -1)
         importance = importance.view(*ray_samples.frustums.shape, -1)
@@ -1160,10 +1174,13 @@ class FlexNerfField(Field):
             field_outputs[FieldHeadNames.IMPORTANCE] = torch.where(mask, importance, 0)
             field_outputs[FieldHeadNames.RGB] = torch.where(mask.expand(-1,-1,3), field_outputs[FieldHeadNames.RGB], 0)
 
+            # block gradients passing through extend loss to the network
+            set_requires_grad(self.mlp_head, False)
             extend_field_outputs = self.get_outputs(ray_samples, density_embedding=extend_density_embedding)
             extend_field_outputs[FieldHeadNames.DENSITY] = torch.where(mask, extend_density, 0) + weight_lower_bound
             extend_field_outputs[FieldHeadNames.RGB] = torch.where(mask.expand(-1,-1,3), extend_field_outputs[FieldHeadNames.RGB], 0)
             extend_field_outputs[FieldHeadNames.CELLID] = torch.where(mask.expand(-1,-1,3), extend_cell_id, 0)
+            set_requires_grad(self.mlp_head, True)
 
             old_field_outputs = self.get_outputs(ray_samples, density_embedding=old_density_embedding)
             old_field_outputs[FieldHeadNames.DENSITY] = torch.where(mask, old_density, 0) + weight_lower_bound
@@ -1174,9 +1191,12 @@ class FlexNerfField(Field):
             field_outputs[FieldHeadNames.CELLID] = cell_id
             field_outputs[FieldHeadNames.IMPORTANCE] = importance
 
+            # block gradients passing through extend loss to the network
+            set_requires_grad(self.mlp_head, False)
             extend_field_outputs = self.get_outputs(ray_samples, density_embedding=extend_density_embedding)
             extend_field_outputs[FieldHeadNames.DENSITY] = extend_density + weight_lower_bound
             extend_field_outputs[FieldHeadNames.CELLID] = extend_cell_id
+            set_requires_grad(self.mlp_head, True)
 
             old_field_outputs = self.get_outputs(ray_samples, density_embedding=old_density_embedding)
             old_field_outputs[FieldHeadNames.DENSITY] = old_density + weight_lower_bound
