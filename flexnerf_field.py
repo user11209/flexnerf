@@ -210,7 +210,8 @@ class MultiLayerTetra(nn.Module):
     def refine_samples(self, step, update_original=True, use_inter_level_importance=True, start_step=0, initializing=False):
         if step != 0 and step < start_step or step > 50000:
             return
-        use_inter_level_importance = (step//1600%2 == 0)
+        # use_inter_level_importance = (step//1600%2 == 0)
+        use_inter_level_importance = False
         self.importance = self.inter_level_importance if use_inter_level_importance else self.remove_empty_importance
         self.remove_last_sampled()
         # TODO: check boundaries, no to exceed the `max_??_count`, especially for sample_extend. Note, merge_extend lack 1 positional argument for that reason. temporarily set it to be 2. Note, this value means how many parent cells will be divided, so the actual increased cell number is at most twice the value
