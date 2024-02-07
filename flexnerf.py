@@ -127,6 +127,16 @@ class FlexNeRFModelConfig(ModelConfig):
     appearance_embed_dim: int = 32
     """Dimension of the appearance embedding."""
 
+class CustomLoss(torch.nn.Module):
+    def __init__(self, ratio=0.1):
+        super(CustomLoss, self).__init__()
+        self.ratio = ratio
+
+    def forward(self, rgb1, rgb2):
+        normalized_rgb1 = torch.nn.functional.normalize(rgb1, p=1, dim=-1, eps=1e-1)
+        normalized_rgb2 = torch.nn.functional.normalize(0.9*rgb2+0.1*rgb1, p=1, dim=-1, eps=1e-1)
+
+        return MSELoss()(rgb1, rgb2) + self.ratio * MSELoss()(normalized_rgb1, normalized_rgb2)
 
 class FlexNeRFModel(Model):
     """FlexNeRF model
@@ -169,7 +179,7 @@ class FlexNeRFModel(Model):
         self.renderer_normals = NormalsRenderer()
 
         # losses
-        self.rgb_loss = MSELoss()
+        self.rgb_loss = CustomLoss()
 
         # metrics
         self.psnr = PeakSignalNoiseRatio(data_range=1.0)
@@ -196,6 +206,10 @@ class FlexNeRFModel(Model):
     ) -> List[TrainingCallback]:
         callbacks = []
         kwargs_dict = {"result": self.result}
+
+        self.false_refine_interval = 100
+        self.true_refine_interval = 1600
+
         #? should be put into config
         importance_profile_start_step = 0
         update_importance_callback = TrainingCallback(
@@ -215,16 +229,16 @@ class FlexNeRFModel(Model):
 
         false_refine_callback = TrainingCallback(
                     where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
-                    update_every_num_iters=100,
+                    update_every_num_iters=self.false_refine_interval,
                     func=partial(self.field.multi_layer_tetra.refine_samples, update_original=False, 
-                                start_step=importance_profile_start_step),
+                                start_step=importance_profile_start_step, interval=self.true_refine_interval),
                 )
 
         true_refine_callback = TrainingCallback(
                     where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
-                    update_every_num_iters=1600,
+                    update_every_num_iters=self.true_refine_interval,
                     func=partial(self.field.multi_layer_tetra.refine_samples, update_original=True,
-                                start_step=importance_profile_start_step),
+                                start_step=importance_profile_start_step, interval=self.true_refine_interval),
                 )
 
         def update_step(step):
@@ -250,7 +264,7 @@ class FlexNeRFModel(Model):
 
         # callbacks.append(check_consistency_callback)
         callbacks.append(update_importance_callback)
-        callbacks.append(global_annealing_callback)
+        # callbacks.append(global_annealing_callback)
         callbacks.append(false_refine_callback)
         callbacks.append(true_refine_callback)
         callbacks.append(update_step_callback)
@@ -291,6 +305,10 @@ class FlexNeRFModel(Model):
                     write_file.write(str(field_outputs[FieldHeadNames.DENSITY][nan_id]))
                     write_file.write("\n============== rgb =================\n")
                     write_file.write(str(field_outputs[FieldHeadNames.RGB][nan_id]))
+                    write_file.write("\n============== cell_id =============\n")
+                    write_file.write(str(field_outputs[FieldHeadNames.CELLID][nan_id]))
+                    write_file.write("\n=========== extend_cell_id =========\n")
+                    write_file.write(str(extend_field_outputs[FieldHeadNames.CELLID][nan_id]))
                     write_file.write("\n====================== Assertion Failed =====================")
                 assert 0
 
@@ -400,12 +418,16 @@ class FlexNeRFModel(Model):
         self.result["gt_rgb"] = gt_rgb
 
         move_step = self.step-1
-        rgb_loss_weight = move_step%1600/1600 if move_step < 51200 else 1
-        old_rgb_loss_weight = 1 - move_step%1600/1600 if move_step < 51200 else 0
-        extend_rgb_loss_weight = (move_step%1600/1600) * (move_step%50/50 if move_step%100<50 else 1-move_step%50/50) * 0.1 if move_step < 51200 else 0
+        T_I = self.true_refine_interval
+        F_I = self.false_refine_interval
+        h_F_I = self.false_refine_interval // 2
+        rgb_loss_weight = move_step %T_I/T_I if move_step < 51200 else 1
+        old_rgb_loss_weight = 1 - move_step %T_I/T_I if move_step < 51200 else 0
+        extend_rgb_loss_weight = (move_step %T_I/T_I) * (move_step %F_I/F_I) * 0.1 if move_step < 51200 else 0
         loss_dict["rgb_loss"] = rgb_loss_weight*self.rgb_loss(gt_rgb, pred_rgb) + \
                                 old_rgb_loss_weight*self.rgb_loss(old_gt_rgb, old_pred_rgb) + \
-                                extend_rgb_loss_weight*self.rgb_loss(extend_gt_rgb, extend_pred_rgb)
+                                extend_rgb_loss_weight*self.rgb_loss(extend_gt_rgb, extend_pred_rgb) + \
+                                1e-8*self.field.weight_regularization_loss()
         return loss_dict
 
     @torch.inference_mode()
@@ -441,7 +463,7 @@ class FlexNeRFModel(Model):
         metrics_dict = {"psnr": float(psnr.item()), "ssim": float(ssim)}  # type: ignore
         metrics_dict["lpips"] = float(lpips)
 
-        images_dict = {"img": combined_rgb, "accumulation": combined_acc, "depth": combined_depth, 
+        images_dict = {"img": combined_rgb, "accumulation": combined_acc, 
                         "importance_slice_clear": importance_slice_clear, "cellid_slice": cellid_slice, "cellid_slice_clear": cellid_slice_clear,
                         "cellid_onobj": cellid_onobj}
 

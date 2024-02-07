@@ -21,7 +21,7 @@ from nerfstudio.field_components.spatial_distortions import SpatialDistortion
 from nerfstudio.fields.base_field import Field, get_normalized_directions
 
 import flexnerf.utils as utils
-from .utils import exponential_update, set_requires_grad
+from .utils import exponential_update, set_requires_grad, visualize_importance_linelike
 
 DIY = False
 DEBUG = True
@@ -211,12 +211,12 @@ class MultiLayerTetra(nn.Module):
         self.sorted_edge_offset = None
 
     @torch.inference_mode()
-    def refine_samples(self, step, update_original=True, use_inter_level_importance=True, start_step=0, initializing=False):
+    def refine_samples(self, step, update_original=True, use_inter_level_importance=True, start_step=0, initializing=False, interval=1000):
         if step != 0 and step < start_step or step > 50000:
             return
-        use_inter_level_importance = (step//1600%2 == 0)
+        use_inter_level_importance = (step//interval%2 == 0)
         self.importance = self.inter_level_importance if use_inter_level_importance else self.remove_empty_importance
-        self.remove_last_sampled()
+        self.remove_last_sampled(initializing)
         # TODO: check boundaries, no to exceed the `max_??_count`, especially for sample_extend. Note, merge_extend lack 1 positional argument for that reason. temporarily set it to be 2. Note, this value means how many parent cells will be divided, so the actual increased cell number is at most twice the value
         if update_original:
             self.apply_newest_layer_field()
@@ -259,7 +259,7 @@ class MultiLayerTetra(nn.Module):
             extend_cell_id = cells["cell_id"]
             self.gather_info_from_cell_id(extend_cell_id, cells, point_id_thresh=self.point_offset[0])
             additional_extend_feature = interpolate_field_value(xyz, cells)
-            extend_feature = additional_extend_feature + feature.detache()
+            extend_feature = additional_extend_feature + feature.detach()
             #? possibly not necessary to pass all the three values all the time?
             return feature, extend_feature, old_feature, cell_id, extend_cell_id, importance
 
@@ -334,6 +334,8 @@ class MultiLayerTetra(nn.Module):
 
         importance_ingredients = {"acc_rgb_diff_2":acc_rgb_diff_2, "extend_diff_2":extend_diff_2, 
                                     "extend_cell_index":extend_cell_index, "raw_transmit_ratio":raw_transmit_ratio}
+
+        visualize_importance_linelike(step, result, importance_ingredients)
 
         reordered_cell_index, reordered_inter_level_importance_value, reordered_importance_power, \
                               reordered_remove_empty_importance_value, reordered_importance_count \
@@ -487,10 +489,11 @@ class MultiLayerTetra(nn.Module):
         point_xyz = self.get_tetra_xyz(self.aabb)
         self.xyz[:4,:] = point_xyz
         with torch.no_grad():
-            self.field[0, ::4] = 1 + torch.zeros_like(self.field[0, ::4]).uniform_(0,0.1)
-            self.field[1, 1::4] = 1 + torch.zeros_like(self.field[1, 1::4]).uniform_(0,0.1)
-            self.field[2, 2::4] = 1 + torch.zeros_like(self.field[2, 2::4]).uniform_(0,0.1)
-            self.field[3, 3::4] = 1 + torch.zeros_like(self.field[3, 3::4]).uniform_(0,0.1)
+            self.field[:4, :].uniform_(0,0.1)
+            self.field[0, :].view(2,2,8)[:,0,:] += 1
+            self.field[1, :].view(4,2,4)[:,0,:] += 1
+            self.field[2, :].view(8,2,2)[:,0,:] += 1
+            self.field[3, :].view(16,2,1)[:,0,:] += 1
 
         self.cell_offset[0] = 1
         self.edge_offset[0] = 6
@@ -559,7 +562,7 @@ class MultiLayerTetra(nn.Module):
         return cells
 
     @torch.inference_mode()
-    def remove_last_sampled(self):
+    def remove_last_sampled(self, initializing):
         child_start = self.cell_offset[0]
         child_end = self.cell_offset[0] + self.extend_cell_offset[0]
 
@@ -585,6 +588,10 @@ class MultiLayerTetra(nn.Module):
         self.field[point_start:point_end, :] = 0
         self.xyz[point_start:point_end, :] = 0
         self.parent_points[point_start:point_end, :] = -1
+
+        #** clean optimizer state
+        if not initializing:
+            utils.reset_global_optimizers_patial(self.cell_offset[0])
 
         #** clean up overall extend labels
         self.extend_cell_offset[0] = 0
@@ -1052,6 +1059,7 @@ class FlexNerfField(Field):
         aabb,
         min_resolution: int = 4,
         feature_dim: int = 32,
+        den_rgb_feat_dim: int = 32,
         max_layer_num: int = 40,
         max_point_per_layer: int = 1e5,
         num_layers: int = 3,
@@ -1064,6 +1072,7 @@ class FlexNerfField(Field):
     ) -> None:
         super().__init__()
         self.register_buffer("aabb", aabb)
+        self.den_rgb_feat_dim = den_rgb_feat_dim
         self.feature_dim = feature_dim
 
         self.geo_feat_dim = geo_feat_dim
@@ -1076,12 +1085,18 @@ class FlexNerfField(Field):
 
         self.multi_layer_tetra = MultiLayerTetra(aabb, feature_dim, max_layer_num, 8*max_point_per_layer, max_point_per_layer)
 
+        def split_sin_func(input_feature):
+            input_feature_p1, input_feature_p2 = torch.split(input_feature, [16,16], -1)
+            sin_feature = torch.cat([input_feature_p1, torch.sin(10*input_feature_p2)], dim=-1)
+            return sin_feature
+        self.split_sin_func = split_sin_func
+
         self.mlp_base_mlp = MLP(
-            in_dim=feature_dim,
+            in_dim=den_rgb_feat_dim,
             num_layers=num_layers,
             layer_width=hidden_dim,
-            out_dim=1 + self.geo_feat_dim,
-            activation=nn.ReLU(),
+            out_dim=geo_feat_dim+1,
+            activation=nn.LeakyReLU(),
             out_activation=None,
             implementation=implementation,
         )
@@ -1091,7 +1106,7 @@ class FlexNerfField(Field):
             num_layers=num_layers_color,
             layer_width=hidden_dim_color,
             out_dim=3,
-            activation=nn.ReLU(),
+            activation=nn.LeakyReLU(),
             out_activation=nn.Sigmoid(),
             implementation=implementation,
         )
@@ -1115,9 +1130,13 @@ class FlexNerfField(Field):
         feature, extend_feature, old_feature, cell_id, extend_cell_id, importance = self.multi_layer_tetra(positions_flat, use_extend=True)
 
         def feature2out(input_feature):
-            h = self.mlp_base_mlp(input_feature).view(*ray_samples.frustums.shape, -1)
+            # sin_feature = self.split_sin_func(input_feature)
+            sin_feature = input_feature
+            density_feature = sin_feature[:, :self.den_rgb_feat_dim].contiguous()
+            rgb_feature = sin_feature[:, -self.den_rgb_feat_dim:].contiguous()
+            density_before_activation = self.mlp_base_mlp(density_feature).view(*ray_samples.frustums.shape, -1)[..., :1].contiguous()
+            rgb_embedding = self.mlp_base_mlp(rgb_feature).view(*ray_samples.frustums.shape, -1)[..., 1:].contiguous()
 
-            density_before_activation, base_mlp_out = torch.split(h, [1, self.geo_feat_dim], dim=-1)
             self._density_before_activation = density_before_activation
 
             # Rectifying the density with an exponential is much more stable than a ReLU or
@@ -1125,7 +1144,7 @@ class FlexNerfField(Field):
             # from smaller internal (float16) parameters.
             density = trunc_exp(density_before_activation.to(positions))
             density = density * selector[..., None]
-            return density, base_mlp_out
+            return density, rgb_embedding
 
         density, density_embedding = feature2out(feature)
         old_density, old_density_embedding = feature2out(old_feature)
@@ -1221,6 +1240,28 @@ class FlexNerfField(Field):
             old_field_outputs[FieldHeadNames.DENSITY] = old_density + weight_lower_bound
 
         return field_outputs, extend_field_outputs, old_field_outputs
+
+    def weight_regularization_loss(self):
+        def mlp_regularization_loss(mlp):
+            param_list = []
+            is_weight = True
+            for param in mlp.parameters():
+                if is_weight:
+                    param_list.append(param)
+                    is_weight = False
+                else:
+                    is_weight = True
+
+            reg_loss = None
+            for weight in param_list:
+                one_reg_loss = torch.sum(weight**2)
+                reg_loss = one_reg_loss if reg_loss==None else (one_reg_loss + reg_loss)
+
+            return reg_loss
+
+        total_reg_loss = mlp_regularization_loss(self.mlp_base_mlp)
+        total_reg_loss += mlp_regularization_loss(self.mlp_head)
+        return total_reg_loss
 
     def test_forward(self, step):
         if step == 0:
