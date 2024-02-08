@@ -214,7 +214,7 @@ class MultiLayerTetra(nn.Module):
     def refine_samples(self, step, update_original=True, use_inter_level_importance=True, start_step=0, initializing=False, interval=1000):
         if step != 0 and step < start_step or step > 50000:
             return
-        use_inter_level_importance = False
+        use_inter_level_importance = (step//interval%2 == 0)
         self.importance = self.inter_level_importance if use_inter_level_importance else self.remove_empty_importance
         self.remove_last_sampled(initializing)
         # TODO: check boundaries, no to exceed the `max_??_count`, especially for sample_extend. Note, merge_extend lack 1 positional argument for that reason. temporarily set it to be 2. Note, this value means how many parent cells will be divided, so the actual increased cell number is at most twice the value
@@ -488,6 +488,12 @@ class MultiLayerTetra(nn.Module):
 
         point_xyz = self.get_tetra_xyz(self.aabb)
         self.xyz[:4,:] = point_xyz
+        with torch.no_grad():
+            self.field[:4, :].uniform_(0,0.1)
+            self.field[0, :].view(2,2,8)[:,0,:] += 1
+            self.field[1, :].view(4,2,4)[:,0,:] += 1
+            self.field[2, :].view(8,2,2)[:,0,:] += 1
+            self.field[3, :].view(16,2,1)[:,0,:] += 1
 
         self.cell_offset[0] = 1
         self.edge_offset[0] = 6
@@ -1052,15 +1058,15 @@ class FlexNerfField(Field):
         self,
         aabb,
         min_resolution: int = 4,
-        feature_dim: int = 2,
-        den_rgb_feat_dim: int = 2,
+        feature_dim: int = 32,
+        den_rgb_feat_dim: int = 32,
         max_layer_num: int = 40,
         max_point_per_layer: int = 1e5,
         num_layers: int = 3,
-        hidden_dim: int = 4,
-        geo_feat_dim: int = 3,
+        hidden_dim: int = 128,
+        geo_feat_dim: int = 15,
         num_layers_color: int = 3,
-        hidden_dim_color: int = 4,
+        hidden_dim_color: int = 64,
         spatial_distortion: Optional[SpatialDistortion] = None,
         implementation: Literal["tcnn", "torch"] = "tcnn",
     ) -> None:
@@ -1078,6 +1084,12 @@ class FlexNerfField(Field):
         )
 
         self.multi_layer_tetra = MultiLayerTetra(aabb, feature_dim, max_layer_num, 8*max_point_per_layer, max_point_per_layer)
+
+        def split_sin_func(input_feature):
+            input_feature_p1, input_feature_p2 = torch.split(input_feature, [16,16], -1)
+            sin_feature = torch.cat([input_feature_p1, torch.sin(10*input_feature_p2)], dim=-1)
+            return sin_feature
+        self.split_sin_func = split_sin_func
 
         self.mlp_base_mlp = MLP(
             in_dim=den_rgb_feat_dim,
@@ -1118,25 +1130,27 @@ class FlexNerfField(Field):
         feature, extend_feature, old_feature, cell_id, extend_cell_id, importance = self.multi_layer_tetra(positions_flat, use_extend=True)
 
         def feature2out(input_feature):
+            # sin_feature = self.split_sin_func(input_feature)
             sin_feature = input_feature
+            density_feature = sin_feature[:, :self.den_rgb_feat_dim].contiguous()
             rgb_feature = sin_feature[:, -self.den_rgb_feat_dim:].contiguous()
+            density_before_activation = self.mlp_base_mlp(density_feature).view(*ray_samples.frustums.shape, -1)[..., :1].contiguous()
             rgb_embedding = self.mlp_base_mlp(rgb_feature).view(*ray_samples.frustums.shape, -1)[..., 1:].contiguous()
+
+            self._density_before_activation = density_before_activation
 
             # Rectifying the density with an exponential is much more stable than a ReLU or
             # softplus, because it enables high post-activation (float32) density outputs
             # from smaller internal (float16) parameters.
-            return rgb_embedding
+            density = trunc_exp(density_before_activation.to(positions))
+            density = density * selector[..., None]
+            return density, rgb_embedding
 
-        dist = torch.norm(positions_flat - torch.tensor([[0.4556, 0.465, 0.3911]], device=positions_flat.device), p=2, dim=1)
-        density = torch.where(dist < 0.02, 30, torch.where(dist > 0.05, 0, 1e3*(0.05-dist))).view(*ray_samples.frustums.shape, -1)
-        extend_density = density.clone()
-        old_density = density.clone()
-
-        density_embedding = feature2out(feature)
-        old_density_embedding = feature2out(old_feature)
+        density, density_embedding = feature2out(feature)
+        old_density, old_density_embedding = feature2out(old_feature)
         # block gradients passing through extend loss to the network
         set_requires_grad(self.mlp_base_mlp, False)
-        extend_density_embedding = feature2out(extend_feature)
+        extend_density, extend_density_embedding = feature2out(extend_feature)
         set_requires_grad(self.mlp_base_mlp, True)
 
         cell_id = cell_id.view(*ray_samples.frustums.shape, -1)
