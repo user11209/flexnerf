@@ -160,6 +160,14 @@ class MultiLayerTetra(nn.Module):
             "remove_empty_importance",
             torch.empty((self.max_cell_count, 6), dtype=torch.float32).uniform_(0,1e-8)
         )
+        self.register_buffer(
+            "importance_correction",
+            torch.zeros((self.max_cell_count, 6), dtype=torch.float32)
+        )
+        self.register_buffer(
+            "importance_calculation_buffer",
+            torch.zeros((self.max_cell_count, 2), dtype=torch.float32)
+        )
         ## activation_layer stands for the layer where child cell is stored. That is, cells may have a cross-multi-layer parent-child relationship. 
         ## note: A cell is only activated when seach_layer_i(i == activation_layer)
         ## activation_layer in range(0, max_layer_num) for original; range(max_layer_num, 2*max_layer_num) for extend
@@ -315,7 +323,7 @@ class MultiLayerTetra(nn.Module):
         rgb_extend = result['rgb_extend']
         pred_rgb = result['pred_rgb']
         gt_rgb = result['gt_rgb']
-        transmittance = result['transmittance'].squeeze(-1)
+        transmittance = result['transmittance']
 
         update_weights_momentum = torch.max(weights_original) + torch.max(weights_extend) + 1e-8
         self.weights_momentum[0] = exponential_update(self.weights_momentum[0], update_weights_momentum, 0.99)
@@ -329,11 +337,14 @@ class MultiLayerTetra(nn.Module):
 
         acc_rgb_diff_2 = torch.sum((pred_rgb-gt_rgb)*(pred_rgb-gt_rgb), axis=-1)[:, None].expand(extend_diff_2.shape)
 
-        transmittance_thresh = torch.sin(torch.tensor(12.345678)*step)*0.2 +0.8
-        raw_transmit_ratio = (transmittance > transmittance_thresh).float()
+        transmittance_thresh = torch.tensor([0.1, 0.3, 0.5, 0.7, 0.9], device=cell_index.device).view(1,1,-1)
+        trans_over_thresh = (transmittance < transmittance_thresh).float() # [ray_num, sample_num, 5]
+        is_on_surface_nohead = torch.sum(trans_over_thresh[:, 1:, :] - trans_over_thresh[:, :-1, :], axis=2) # [ray_num, sample_num-1]
+        head = torch.zeros(is_on_surface_nohead.shape[0], 1, dtype=torch.float32, device=is_on_surface_nohead.device)
+        is_on_surface = torch.concatenate([head, is_on_surface_nohead], dim=1)
 
         importance_ingredients = {"acc_rgb_diff_2":acc_rgb_diff_2, "extend_diff_2":extend_diff_2, 
-                                    "extend_cell_index":extend_cell_index, "raw_transmit_ratio":raw_transmit_ratio}
+                                    "extend_cell_index":extend_cell_index, "is_on_surface":is_on_surface}
 
         visualize_importance_linelike(step, result, importance_ingredients)
 
@@ -398,24 +409,24 @@ class MultiLayerTetra(nn.Module):
 
         #! calculate remove_empty_importance new value.
         #* calculate covariance between extend cell index and weights. This is to encorage the cells to slice off empty areas.
-        sorted_cellid_wei_prod_cumsum = torch.concatenate([float_head, \
-                                         torch.cumsum(ingredients["extend_cell_index"]*ingredients["raw_transmit_ratio"], 0)])
-        sorted_extend_cell_index_cumsum = torch.concatenate([float_head, torch.cumsum(ingredients["extend_cell_index"], 0).float()])
-        sorted_raw_transmit_ratio_cumsum = torch.concatenate([float_head, torch.cumsum(ingredients["raw_transmit_ratio"], 0)])
+        child_0_on_surface = (1- ingredients["extend_cell_index"]%2) * ingredients["is_on_surface"]
+        child_1_on_surface = (ingredients["extend_cell_index"]%2) * ingredients["is_on_surface"]
+        
+        child_0_on_surface_cumsum = torch.concatenate([float_head, torch.cumsum(child_0_on_surface, 0)], 0)
+        child_1_on_surface_cumsum = torch.concatenate([float_head, torch.cumsum(child_1_on_surface, 0)], 0)
 
-        sorted_cellid_wei_prod_sum = sorted_cellid_wei_prod_cumsum[leading_cell[1:]] - \
-                                      sorted_cellid_wei_prod_cumsum[leading_cell[:-1]]
-        sorted_extend_cell_index_sum = sorted_extend_cell_index_cumsum[leading_cell[1:]] - \
-                                        sorted_extend_cell_index_cumsum[leading_cell[:-1]]
-        sorted_raw_transmit_ratio_sum = sorted_raw_transmit_ratio_cumsum[leading_cell[1:]] - \
-                                    sorted_raw_transmit_ratio_cumsum[leading_cell[:-1]]
-        sorted_cell_count = leading_cell[1:] - leading_cell[:-1]
-        cellid_n_wei_cov = sorted_cellid_wei_prod_sum / sorted_cell_count - \
-                            sorted_extend_cell_index_sum*sorted_raw_transmit_ratio_sum / sorted_cell_count**2
-        reordered_remove_empty_importance_value = cellid_n_wei_cov*cellid_n_wei_cov
+        child_0_on_surface_sum = child_0_on_surface_cumsum[leading_cell[1:]] - \
+                                      child_0_on_surface_cumsum[leading_cell[:-1]]
+        child_1_on_surface_sum = child_1_on_surface_cumsum[leading_cell[1:]] - \
+                                      child_1_on_surface_cumsum[leading_cell[:-1]]
+        self.importance_calculation_buffer[reordered_cell_index, 0] += child_0_on_surface_sum
+        self.importance_calculation_buffer[reordered_cell_index, 1] += child_1_on_surface_sum
+        count0 = self.importance_calculation_buffer[reordered_cell_index, 0]
+        count1 = self.importance_calculation_buffer[reordered_cell_index, 1]
+        reordered_remove_empty_importance_value = torch.abs(count0 - count1) + 0.5*(count0 + count1) + 1e-9
 
         return reordered_cell_index, reordered_inter_level_importance_value, groupby_powersum, \
-                                    reordered_remove_empty_importance_value, sorted_cell_count
+                                    reordered_remove_empty_importance_value, None
 
     @torch.inference_mode()
     def update_importance(self, related_cell_index, importance_value, importance_power, update_inter_level_importance=True, update_rate=0.999):
@@ -436,27 +447,34 @@ class MultiLayerTetra(nn.Module):
         related_edge_idincell = self.edge_idincell_from_point(related_child_cut)
         # groupby_edge_valid = (groupby_edge_idincell != -1)
 
-        cellwise_update_rate = torch.pow(update_rate, importance_power)
+        if importance_power != None:
+            cellwise_update_rate = torch.pow(update_rate, importance_power)
+        else:
+            cellwise_update_rate = 0
         cellwise_importance_last = update_importance[related_cell_index, related_edge_idincell]
-        cellwise_importance_new = exponential_update(cellwise_importance_last, importance_value, cellwise_update_rate)
+        cellwise_importance_correction = self.importance_correction[related_cell_index, related_edge_idincell]
+        cellwise_importance_new = exponential_update(cellwise_importance_last, \
+                                                    importance_value * cellwise_importance_correction, \
+                                                    cellwise_update_rate)
 
         #* update the importance
         if update_inter_level_importance:
             self.inter_level_importance[related_cell_index, related_edge_idincell] = cellwise_importance_new
         else:
             self.remove_empty_importance[related_cell_index, related_edge_idincell] = cellwise_importance_new
-        
+
         if DEBUG and self.step % 100 == 0:
             with open(DEBUG_file, "a") as write_file:
                 sample_id = self.step // 100 * 37831 % related_cell_index.shape[0]
                 tag = " [inter_level_importance]: " if update_inter_level_importance else " [remove_empty_importance]: "
-                update_str = tag + "cell " + str(related_cell_index[sample_id].item()) + \
-                            " is updating its edge " + str(related_edge_idincell[sample_id].item()) + \
-                            " with new value " + str(cellwise_importance_new[sample_id].item()) + \
-                            " which without averaging is " + str(importance_value[sample_id].item()) + \
-                            " and cellwise_update_rate " + str(cellwise_update_rate[sample_id].item()) + \
-                            " and cellwise_importance_power " + str(importance_power[sample_id].item()) + \
-                            " and momentum " + str(self.importance_momentum[0].item()) + "\n"
+                update_str = tag + "cell " + str(related_cell_index[sample_id].item())
+                update_str += " is updating its edge " + str(related_edge_idincell[sample_id].item())
+                update_str += " with new value " + str(cellwise_importance_new[sample_id].item())
+                update_str += " which without averaging is " + str(importance_value[sample_id].item())
+                update_str += " and cellwise_update_rate " + ("0" if importance_power==None else str(cellwise_update_rate[sample_id].item()))
+                update_str += " and cellwise_importance_power " + ("None" if importance_power==None else str(importance_power[sample_id].item()))
+                update_str += " and momentum " + str(self.importance_momentum[0].item()) 
+                update_str += " and importance_correction " + str(cellwise_importance_correction[sample_id].item()) + "\n"
                 
                 write_file.write(update_str)
 
@@ -465,17 +483,21 @@ class MultiLayerTetra(nn.Module):
             importance_nan_id = torch.nonzero(importance_nan)
             importance_nan_cell_index = related_cell_index[importance_nan_id.view(-1)[0]]
             nan_importance_value = importance_value[importance_nan_id.view(-1)[0]]
-            nan_importance_power = importance_power[importance_nan_id.view(-1)[0]]
-            nan_cellwise_update_rate = cellwise_update_rate[importance_nan_id.view(-1)[0]]
+            if importance_power != None:
+                nan_importance_power = importance_power[importance_nan_id.view(-1)[0]].item()
+                nan_cellwise_update_rate = cellwise_update_rate[importance_nan_id.view(-1)[0]].item()
+            else:
+                nan_importance_power = None
+                nan_cellwise_update_rate = 0
             with open(DEBUG_file, "a") as write_file:
+                write_file.write("================== UPDATE IMPORTANCE =================\n")
                 tag = " [inter_level_importance]: " if update_inter_level_importance else " [remove_empty_importance]: "
                 update_str = tag + "updating nan! cell " + str(importance_nan_cell_index.item()) + \
                             " with new value nan! actually, " + str(importance_nan_id.shape[0]) + \
                             " different cells are getting nan! it happens with importance_value " + str(nan_importance_value.item()) +\
-                            " and importance_power " + str(nan_importance_power.item()) + \
-                            " and cellwise_update_rate " + str(nan_cellwise_update_rate.item()) + \
+                            " and importance_power " + str(nan_importance_power) + \
+                            " and cellwise_update_rate " + str(nan_cellwise_update_rate) + \
                             ". Note that momentum is " + str(self.importance_momentum[0].item()) + "\n"
-                write_file.write("================== UPDATE IMPORTANCE =================\n")
                 write_file.write(update_str)
                 write_file.write("======================================================\n")
             assert 0
@@ -485,6 +507,7 @@ class MultiLayerTetra(nn.Module):
         self.point_index[:1,:] = torch.arange(4, device=self.point_index.device).view(1,4)
         self.edge_index[:1] = torch.arange(6, device=self.edge_index.device).view(1,6)
         self.layer[:1] = 0
+        self.importance_correction[:1, :] = 1
 
         point_xyz = self.get_tetra_xyz(self.aabb)
         self.xyz[:4,:] = point_xyz
@@ -569,6 +592,7 @@ class MultiLayerTetra(nn.Module):
         self.child_index[parent_cell_index, :] = -1
         self.child_cut[parent_cell_index, :] = -1
         self.activation_layer[parent_cell_index] = -1
+        self.importance_calculation_buffer[parent_cell_index, :] = 0
 
         #** clean up child values
         self.parent_index[child_start:child_end] = -1
@@ -623,7 +647,8 @@ class MultiLayerTetra(nn.Module):
             # bound of sample_value increase with importance
             sample_value = self.importance - average_importance
             # sample rate decrease with iteration count
-            sample_rate = torch.rand(self.max_cell_count,6, device=self.activation_layer.device) * torch.max(sample_value) * 10/(iteration+10)
+            roofed_sample_value = sample_value * torch.logical_and(edge_candidate, ~edge_determined).float()
+            sample_rate = torch.rand(self.max_cell_count,6, device=self.activation_layer.device) * torch.max(roofed_sample_value) * 10/(iteration+10)
 
             #** sample a few bunch of edges, at most one edge per cell
             chosen_edge_stage1 = torch.logical_or(edge_determined, \
@@ -702,6 +727,20 @@ class MultiLayerTetra(nn.Module):
         self.edge_offset[0] += full_subedge_count
         self.edge_index[child_start:child_end, :] = child_edge_index
 
+        #** set importance_correction
+        edge_idincell = torch.arange(6, dtype=torch.int64, device=self.importance_correction.device)
+        selected_point_idincell_alledge = self.selected_point_idincell_from_edge(edge_idincell)
+        unselected_point_idincell_alledge = self.unselected_point_idincell_from_edge(edge_idincell)
+        selected_point_index = self.point_index[child_start:child_end, selected_point_idincell_alledge]
+        unselected_point_index = self.point_index[child_start:child_end, unselected_point_idincell_alledge]
+        selected_point_xyz = self.xyz[selected_point_index, :] # [child_num, 6, 2, 3]
+        unselected_point_xyz = self.xyz[unselected_point_index, :] # [child_num, 6, 2, 3]
+        selected_2_unselected = unselected_point_xyz[:,:,None,:,:] - selected_point_xyz[:,:,:,None,:] # [child_num, 6, s2, u2, 3]
+        normalized_selected_2_unselected = torch.nn.functional.normalize(selected_2_unselected, dim=-1)
+        selected_opposite_angle_cos = torch.sum(torch.prod(normalized_selected_2_unselected, axis=2), axis=-1) # [child_num, 6, u2]
+        self.importance_correction[child_start:child_end, :] = 1 - torch.max(selected_opposite_angle_cos, axis=2).values # [child_num, 6]
+
+        #** change metadata
         self.point_offset[0] += self.extend_point_offset[0]
         self.cell_offset[0] += self.extend_cell_offset[0]
         self.extend_point_offset[0] = 0
