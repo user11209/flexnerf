@@ -207,8 +207,8 @@ class FlexNeRFModel(Model):
         callbacks = []
         kwargs_dict = {"result": self.result}
 
-        self.false_refine_interval = 100
-        self.true_refine_interval = 1600
+        self.false_refine_interval = 50
+        self.true_refine_interval = 800
 
         #? should be put into config
         importance_profile_start_step = 0
