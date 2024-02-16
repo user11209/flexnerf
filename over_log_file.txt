@@ -1,1 +1,1 @@
-[interpolate_field_value]: torch.Size([790528, 4, 32]) torch.Size([790528, 4, 1])
+[interpolate_field_value]: torch.Size([197632, 4, 32]) torch.Size([197632, 4, 1])

@@ -22,6 +22,7 @@ from nerfstudio.fields.base_field import Field, get_normalized_directions
 
 import flexnerf.utils as utils
 from .utils import exponential_update, set_requires_grad, visualize_importance_linelike
+import math
 
 DIY = False
 DEBUG = True
@@ -1100,7 +1101,7 @@ class FlexNerfField(Field):
         aabb,
         min_resolution: int = 4,
         feature_dim: int = 32,
-        den_rgb_feat_dim: int = 32,
+        den_rgb_feat_dim: int = 28,
         max_layer_num: int = 40,
         max_point_per_layer: int = 1e5,
         num_layers: int = 3,
@@ -1146,6 +1147,18 @@ class FlexNerfField(Field):
             implementation=implementation,
         )
 
+        self.mlp_density_auxilary = MLP(
+            in_dim=self.feature_dim - self.den_rgb_feat_dim,
+            num_layers=2,
+            layer_width=hidden_dim,
+            out_dim=1,
+            activation=nn.LeakyReLU(),
+            out_activation=None,
+            implementation=implementation,
+        )
+
+        self.state = "INITIALZING"
+
     def get_density(self, ray_samples: RaySamples) -> Tuple[Tensor, Tensor]:
         """Computes and returns the densities."""
         if self.spatial_distortion is not None:
@@ -1165,19 +1178,20 @@ class FlexNerfField(Field):
         feature, extend_feature, old_feature, cell_id, extend_cell_id, importance, in_cell_mask = self.multi_layer_tetra(positions_flat, use_extend=True)
 
         def feature2out(input_feature):
-            sin_feature = input_feature
-            density_feature = sin_feature[:, :self.den_rgb_feat_dim].contiguous()
-            rgb_feature = sin_feature[:, -self.den_rgb_feat_dim:].contiguous()
-            density_before_activation = self.mlp_base_mlp(density_feature).view(*ray_samples.frustums.shape, -1)[..., :1].contiguous()
-            rgb_embedding = self.mlp_base_mlp(rgb_feature).view(*ray_samples.frustums.shape, -1)[..., 1:].contiguous()
+            main_feature, auxilary_feature = torch.split(input_feature, [self.den_rgb_feat_dim, self.feature_dim-self.den_rgb_feat_dim], dim=-1)
+            density_before_activation, rgb_embedding = \
+                torch.split(self.mlp_base_mlp(main_feature).view(*ray_samples.frustums.shape, -1), [1, self.geo_feat_dim], dim=-1)
 
-            self._density_before_activation = density_before_activation
+            auxilary_density_before_activation = self.mlp_density_auxilary(auxilary_feature).view(*ray_samples.frustums.shape, -1)
 
             # Rectifying the density with an exponential is much more stable than a ReLU or
             # softplus, because it enables high post-activation (float32) density outputs
             # from smaller internal (float16) parameters.
             density = trunc_exp(density_before_activation.to(positions))
-            density = density * selector[..., None]
+            auxilary_density = trunc_exp(auxilary_density_before_activation.to(positions))
+            if self.state == "INITIALIZING":
+                auxilary_density += 1e3
+            density = (density * auxilary_density) / (density + auxilary_density) * selector[..., None]
             return density, rgb_embedding
 
         density, density_embedding = feature2out(feature)
@@ -1297,6 +1311,31 @@ class FlexNerfField(Field):
         total_reg_loss = mlp_regularization_loss(self.mlp_base_mlp)
         total_reg_loss += mlp_regularization_loss(self.mlp_head)
         return total_reg_loss
+
+    @torch.inference_mode()
+    def refine_samples_for_tetra(self, step, update_original=True, use_inter_level_importance=True, start_step=0, initializing=False, interval=1000):
+        if (step % (4*interval)) == 0 and step != 0:
+            is_weight = True
+            for param in self.mlp_density_auxilary.parameters():
+                if is_weight:
+                    torch.nn.init.kaiming_uniform_(param, a=math.sqrt(5))
+                    fan_in, _ = torch.nn.init._calculate_fan_in_and_fan_out(param)
+                    is_weight = False
+                else:
+                    bound = 1 / math.sqrt(fan_in)
+                    torch.nn.init.uniform_(param, -bound, bound)
+                    is_weight = True
+        if step >= 4*interval:
+            if step % (4*interval) < interval / 8:
+                self.state = "RECOVERING_DENSITY"
+                utils.mute_global_optimizer("field_network")
+            else:
+                self.state = "TRAINING_FULL"
+                utils.clear_mute_global_optimizer()
+        else:
+            self.state = "INITIALIZING"
+            utils.clear_mute_global_optimizer()
+        self.multi_layer_tetra.refine_samples(step, update_original, use_inter_level_importance, start_step, initializing, interval)
 
     def test_forward(self, step):
         if step == 0:

@@ -136,7 +136,7 @@ class CustomLoss(torch.nn.Module):
         normalized_rgb1 = torch.nn.functional.normalize(rgb1, p=1, dim=-1, eps=1e-1)
         normalized_rgb2 = torch.nn.functional.normalize(0.9*rgb2+0.1*rgb1, p=1, dim=-1, eps=1e-1)
 
-        return MSELoss()(rgb1, rgb2) + self.ratio * MSELoss()(normalized_rgb1, normalized_rgb2)
+        return MSELoss()(rgb1, rgb2) #+ self.ratio * MSELoss()(normalized_rgb1, normalized_rgb2)
 
 class FlexNeRFModel(Model):
     """FlexNeRF model
@@ -194,10 +194,12 @@ class FlexNeRFModel(Model):
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
         param_groups = {}
-        multi_layer_feature = self.field.multi_layer_tetra.parameters()
-        multi_layer_feature_id = list(map(id, multi_layer_feature))
-        rest_params = filter(lambda x:id(x) not in multi_layer_feature_id, self.field.parameters())
+        multi_layer_feature_id = list(map(id, self.field.multi_layer_tetra.parameters()))
+        auxilary_field_network_id = list(map(id, self.field.mlp_density_auxilary.parameters()))
+        rest_params = filter(lambda x:id(x) not in multi_layer_feature_id and \
+                                      id(x) not in auxilary_field_network_id, self.field.parameters())
         param_groups["field_features"] = self.field.multi_layer_tetra.parameters()
+        param_groups["auxilary_field_network"] = self.field.mlp_density_auxilary.parameters()
         param_groups["field_network"] = rest_params
         return param_groups
 
@@ -230,14 +232,14 @@ class FlexNeRFModel(Model):
         false_refine_callback = TrainingCallback(
                     where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
                     update_every_num_iters=self.false_refine_interval,
-                    func=partial(self.field.multi_layer_tetra.refine_samples, update_original=False, 
+                    func=partial(self.field.refine_samples_for_tetra, update_original=False, 
                                 start_step=importance_profile_start_step, interval=self.true_refine_interval),
                 )
 
         true_refine_callback = TrainingCallback(
                     where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
                     update_every_num_iters=self.true_refine_interval,
-                    func=partial(self.field.multi_layer_tetra.refine_samples, update_original=True,
+                    func=partial(self.field.refine_samples_for_tetra, update_original=True,
                                 start_step=importance_profile_start_step, interval=self.true_refine_interval),
                 )
 

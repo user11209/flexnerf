@@ -20,6 +20,7 @@ def reset_global_optimizers():
     # for param_group_name in _OPTIMIZERS.optimizers:
     #     _OPTIMIZERS.optimizers[param_group_name].__setstate__({'state': defaultdict(dict)})
     _OPTIMIZERS.optimizers["field_features"].__setstate__({'state': defaultdict(dict)})
+    _OPTIMIZERS.optimizers["auxilary_field_network"].__setstate__({'state': defaultdict(dict)})
 
 def reset_global_optimizers_patial(cell_num_thresh):
     global _OPTIMIZERS
@@ -30,6 +31,16 @@ def reset_global_optimizers_patial(cell_num_thresh):
     for param in state.keys():
         state[param]['exp_avg'][cell_num_thresh:, :] = 0
         state[param]['exp_avg_sq'][cell_num_thresh:, :] = 0
+
+def mute_global_optimizer(param_group_name):
+    global _OPTIMIZERS
+    assert _OPTIMIZERS != None
+    _OPTIMIZERS.mute_optimizer(param_group_name)
+
+def clear_mute_global_optimizer():
+    global _OPTIMIZERS
+    assert _OPTIMIZERS != None
+    _OPTIMIZERS.clear_mute_optimizer()
 
 def exponential_update(old_value, new_value, update_rate):
     return torch.exp(update_rate*torch.log(old_value + 1e-40) + (1-update_rate)*torch.log(new_value + 1e-40))
