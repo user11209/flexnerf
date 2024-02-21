@@ -50,6 +50,9 @@ from nerfstudio.utils import colormaps
 
 from .flexnerf_field import FlexNerfField
 from functools import partial
+import flexnerf.utils as utils
+
+import code
 
 DEBUG = True
 DEBUG_file = "/home/zhangjw/nerfstudio/external/flexnerf/log_file.txt"
@@ -274,6 +277,9 @@ class FlexNeRFModel(Model):
 
     def get_outputs(self, ray_bundle: RayBundle):
         ray_samples: RaySamples
+        if utils.get_error():
+            code.interact(local=locals(), banner="someone caught an error, check it out!")
+
         ray_samples_coarse = self.sampler_uniform(ray_bundle)
         field_outputs_coarse, _, _ = self.field.forward(ray_samples_coarse)
         weights_coarse = ray_samples_coarse.get_weights(field_outputs_coarse[FieldHeadNames.DENSITY])
@@ -312,7 +318,8 @@ class FlexNeRFModel(Model):
                     write_file.write("\n=========== extend_cell_id =========\n")
                     write_file.write(str(extend_field_outputs[FieldHeadNames.CELLID][nan_id]))
                     write_file.write("\n====================== Assertion Failed =====================")
-                assert 0
+                print("asserting from get_outputs of flexnerf model!")
+                code.interact(local=locals())
 
         #? change the `True` on the next line to be something in `self.config`, about computing extend
         if True:
@@ -369,6 +376,9 @@ class FlexNeRFModel(Model):
             rgb_importance_slice_clear = self.renderer_rgb(rgb=importance_rgb_raw, weights=weights_slice_clear)
             rgb_cellid_slice_clear = self.renderer_rgb(rgb=slice_cellid_rgb_raw, weights=weights_slice_clear)
             rgb_cellid_onobj = self.renderer_rgb(rgb=cellid_rgb_raw, weights=weights, background_color="black")
+
+        if utils.get_error():
+            code.interact(local=locals(), banner="someone caught an error, check it out!")
 
         outputs = {
             "rgb": rgb,
@@ -428,8 +438,7 @@ class FlexNeRFModel(Model):
         extend_rgb_loss_weight = (move_step %T_I/T_I) * (move_step %F_I/F_I) * 0.1 if move_step < 51200 else 0
         loss_dict["rgb_loss"] = rgb_loss_weight*self.rgb_loss(gt_rgb, pred_rgb) + \
                                 old_rgb_loss_weight*self.rgb_loss(old_gt_rgb, old_pred_rgb) + \
-                                extend_rgb_loss_weight*self.rgb_loss(extend_gt_rgb, extend_pred_rgb) + \
-                                1e-8*self.field.weight_regularization_loss()
+                                extend_rgb_loss_weight*self.rgb_loss(extend_gt_rgb, extend_pred_rgb)
         return loss_dict
 
     @torch.inference_mode()
@@ -437,7 +446,7 @@ class FlexNeRFModel(Model):
         self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
     ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
         gt_rgb = batch["image"].to(self.device)
-        predicted_rgb = outputs["rgb"]  # Blended with background (black if random background)
+        predicted_rgb = torch.clamp(outputs["rgb"], 0, 1)  # Blended with background (black if random background)
         gt_rgb = self.renderer_rgb.blend_background(gt_rgb)
         acc = colormaps.apply_colormap(outputs["accumulation"])
         importance_slice_clear = outputs["importance_slice_clear"]

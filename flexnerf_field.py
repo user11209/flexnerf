@@ -5,7 +5,7 @@ from torch import Tensor, nn
 
 from nerfstudio.cameras.rays import RaySamples
 from nerfstudio.data.scene_box import SceneBox
-from nerfstudio.field_components.activations import trunc_exp
+from nerfstudio.field_components.activations import trunc_exp, trunc_exp_harmonic_mean
 from nerfstudio.field_components.embedding import Embedding
 from nerfstudio.field_components.encodings import HashEncoding, NeRFEncoding, SHEncoding
 from nerfstudio.field_components.field_heads import (
@@ -15,6 +15,7 @@ from nerfstudio.field_components.field_heads import (
     TransientDensityFieldHead,
     TransientRGBFieldHead,
     UncertaintyFieldHead,
+    SHFieldHead,
 )
 from nerfstudio.field_components.mlp import MLP
 from nerfstudio.field_components.spatial_distortions import SpatialDistortion
@@ -23,6 +24,7 @@ from nerfstudio.fields.base_field import Field, get_normalized_directions
 import flexnerf.utils as utils
 from .utils import exponential_update, set_requires_grad, visualize_importance_linelike
 import math
+import code
 
 DIY = False
 DEBUG = True
@@ -59,8 +61,9 @@ def interpolate_field_value(xyz, cells):
         cell_feature = cells["feature"]
 
     canonical = to_canonical(xyz, cell_xyz).unsqueeze(-1)
-    with open(DEBUG_over_file, "w") as write_file:
-        write_file.write("[interpolate_field_value]: "+str(cell_feature.shape)+" "+str(canonical.shape))
+    if False:
+        with open(DEBUG_over_file, "w") as write_file:
+            write_file.write("[interpolate_field_value]: "+str(cell_feature.shape)+" "+str(canonical.shape))
     interpolated_feature = torch.sum(cell_feature * canonical, axis=1)
     import numpy as np
     torch.set_printoptions(threshold=np.inf)
@@ -225,7 +228,7 @@ class MultiLayerTetra(nn.Module):
             return
         use_inter_level_importance = (step//interval%2 == 0)
         self.importance = self.inter_level_importance if use_inter_level_importance else self.remove_empty_importance
-        self.remove_last_sampled(initializing)
+        self.remove_last_sampled(initializing, update_original)
         # TODO: check boundaries, no to exceed the `max_??_count`, especially for sample_extend. Note, merge_extend lack 1 positional argument for that reason. temporarily set it to be 2. Note, this value means how many parent cells will be divided, so the actual increased cell number is at most twice the value
         if update_original:
             self.apply_newest_layer_field()
@@ -348,11 +351,17 @@ class MultiLayerTetra(nn.Module):
                                     "extend_cell_index":extend_cell_index, "is_on_surface":is_on_surface}
 
         visualize_importance_linelike(step, result, importance_ingredients)
-
         reordered_cell_index, reordered_inter_level_importance_value, reordered_importance_power, \
                               reordered_remove_empty_importance_value, reordered_importance_count \
                     = self.calculate_importance_with_reordering(cell_index, importance_ingredients)
         
+
+        if torch.any(reordered_inter_level_importance_value < 0) or \
+                torch.any(reordered_remove_empty_importance_value < 0) or\
+                torch.any(reordered_importance_power < 0):
+            print("asserting from update_importance_from_result!")
+            code.interact(local=locals())
+
         # if not started yet, only update importance_momentum. May cause /0 error if not.
         # (because importance_momentum will be 0 for a relatively long time)
         only_momentum = (step < start_step)
@@ -425,6 +434,13 @@ class MultiLayerTetra(nn.Module):
         count0 = self.importance_calculation_buffer[reordered_cell_index, 0]
         count1 = self.importance_calculation_buffer[reordered_cell_index, 1]
         reordered_remove_empty_importance_value = torch.abs(count0 - count1) + 0.5*(count0 + count1) + 1e-9
+
+        if torch.any(reordered_inter_level_importance_value < 0) or \
+                torch.any(reordered_remove_empty_importance_value < 0) or\
+                torch.any(groupby_powersum < 0):
+            print("asserting from calculate_importance_with_reordering!")
+            code.interact(local=locals())
+            utils.set_error(1)
 
         return reordered_cell_index, reordered_inter_level_importance_value, groupby_powersum, \
                                     reordered_remove_empty_importance_value, None
@@ -501,7 +517,9 @@ class MultiLayerTetra(nn.Module):
                             ". Note that momentum is " + str(self.importance_momentum[0].item()) + "\n"
                 write_file.write(update_str)
                 write_file.write("======================================================\n")
-            assert 0
+            print("asserting from update_importance!")
+            code.interact(local=locals())
+            utils.set_error(1)
 
     # ! detailed function definition starts here
     def organize_layer_0(self):
@@ -588,7 +606,7 @@ class MultiLayerTetra(nn.Module):
         return cells
 
     @torch.inference_mode()
-    def remove_last_sampled(self, initializing):
+    def remove_last_sampled(self, initializing, update_original):
         child_start = self.cell_offset[0]
         child_end = self.cell_offset[0] + self.extend_cell_offset[0]
 
@@ -618,7 +636,8 @@ class MultiLayerTetra(nn.Module):
 
         #** clean optimizer state
         if not initializing:
-            utils.reset_global_optimizers_patial(self.cell_offset[0])
+            reset_sq_value = 0 if update_original else 1
+            utils.reset_global_optimizers_partial(self.cell_offset[0], reset_sq_value)
 
         #** clean up overall extend labels
         self.extend_cell_offset[0] = 0
@@ -656,7 +675,7 @@ class MultiLayerTetra(nn.Module):
             # bound of sample_value increase with importance
             sample_value = self.importance - average_importance
             # sample rate decrease with iteration count
-            roofed_sample_value = sample_value * torch.logical_and(edge_candidate, ~edge_determined).float()
+            roofed_sample_value = sample_value * is_leaf_cell.view(-1,1) * torch.logical_and(edge_candidate, ~edge_determined).float()
             sample_rate = torch.rand(self.max_cell_count,6, device=self.activation_layer.device) * torch.max(roofed_sample_value) * 10/(iteration+10)
 
             #** sample a few bunch of edges, at most one edge per cell
@@ -1138,13 +1157,20 @@ class FlexNerfField(Field):
         )
 
         self.mlp_head = MLP(
-            in_dim=self.direction_encoding.get_out_dim() + self.geo_feat_dim,
+            in_dim=self.geo_feat_dim,
             num_layers=num_layers_color,
             layer_width=hidden_dim_color,
-            out_dim=3,
+            out_dim=hidden_dim_color,
             activation=nn.LeakyReLU(),
-            out_activation=nn.Sigmoid(),
+            out_activation=nn.LeakyReLU(),
             implementation=implementation,
+        )
+
+        self.SH_head = SHFieldHead(
+            in_dim=hidden_dim_color,
+            levels=4,
+            channels=3,
+            activation=nn.Sigmoid(),
         )
 
         self.mlp_density_auxilary = MLP(
@@ -1187,11 +1213,18 @@ class FlexNerfField(Field):
             # Rectifying the density with an exponential is much more stable than a ReLU or
             # softplus, because it enables high post-activation (float32) density outputs
             # from smaller internal (float16) parameters.
-            density = trunc_exp(density_before_activation.to(positions))
+            raw_density = trunc_exp(density_before_activation.to(positions))
             auxilary_density = trunc_exp(auxilary_density_before_activation.to(positions))
             if self.state == "INITIALIZING":
-                auxilary_density += 1e3
-            density = (density * auxilary_density) / (density + auxilary_density) * selector[..., None]
+                density = trunc_exp(density_before_activation.to(positions))
+            else:
+                density = trunc_exp_harmonic_mean(density_before_activation.to(positions), \
+                                                auxilary_density_before_activation.to(positions))
+
+            if torch.any(torch.isnan(density)):
+                code.interact(local=locals(), banner="found nan density!")
+                utils.set_error(3)
+
             return density, rgb_embedding
 
         density, density_embedding = feature2out(feature)
@@ -1226,18 +1259,14 @@ class FlexNerfField(Field):
         camera_indices = ray_samples.camera_indices.squeeze()
         directions = get_normalized_directions(ray_samples.frustums.directions)
         directions_flat = directions.view(-1, 3)
-        d = self.direction_encoding(directions_flat)
 
         outputs_shape = ray_samples.frustums.directions.shape[:-1]
 
-        h = torch.cat(
-            [
-                d,
-                density_embedding.view(-1, self.geo_feat_dim),
-            ],
-            dim=-1,
-        )
-        rgb = self.mlp_head(h).view(*outputs_shape, -1).to(directions)
+        SH_output = self.SH_head(self.mlp_head(density_embedding.view(-1, self.geo_feat_dim))).view(-1, 3, 16)
+        d = self.direction_encoding(directions_flat).view(-1, 1, 16)
+        SH_scaler = 0.1*torch.ones_like(d[:1, :, :])
+        SH_scaler[:, :, 0] = 3.5449
+        rgb = torch.sum(SH_output * d * SH_scaler, axis=-1).view(*outputs_shape, -1).to(directions)
         outputs.update({FieldHeadNames.RGB: rgb})
 
         return outputs
@@ -1310,6 +1339,7 @@ class FlexNerfField(Field):
 
         total_reg_loss = mlp_regularization_loss(self.mlp_base_mlp)
         total_reg_loss += mlp_regularization_loss(self.mlp_head)
+        total_reg_loss += mlp_regularization_loss(self.mlp_density_auxilary)
         return total_reg_loss
 
     @torch.inference_mode()
@@ -1328,6 +1358,7 @@ class FlexNerfField(Field):
         if step >= 4*interval:
             if step % (4*interval) < interval / 8:
                 self.state = "RECOVERING_DENSITY"
+                utils.clear_mute_global_optimizer()
                 utils.mute_global_optimizer("field_network")
             else:
                 self.state = "TRAINING_FULL"
@@ -1335,6 +1366,7 @@ class FlexNerfField(Field):
         else:
             self.state = "INITIALIZING"
             utils.clear_mute_global_optimizer()
+            utils.mute_global_optimizer("auxilary_field_network")
         self.multi_layer_tetra.refine_samples(step, update_original, use_inter_level_importance, start_step, initializing, interval)
 
     def test_forward(self, step):
@@ -1349,4 +1381,4 @@ class FlexNerfField(Field):
             write_file.write(str(cell_id))
             write_file.write(str(feature[:, :2]))
 
-        assert 0
+        code.interact(local=locals())
