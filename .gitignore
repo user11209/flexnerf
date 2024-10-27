@@ -1,3 +1,5 @@
 __pychache__/
 log_file.txt
 over_log_file.txt
+interpolate/test/test_data/*
+interpolate/test/pred_data/*

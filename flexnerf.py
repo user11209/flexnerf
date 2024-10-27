@@ -55,7 +55,7 @@ import flexnerf.utils as utils
 import code
 
 DEBUG = True
-DEBUG_file = "/home/zhangjw/nerfstudio/external/flexnerf/log_file.txt"
+DEBUG_file = "/media/user11209/D/git_clone_file/nerfstudio/external/flexnerf/log_file.txt"
 DEBUG_global_i = 0
 
 @dataclass

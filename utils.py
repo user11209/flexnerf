@@ -57,7 +57,9 @@ def set_requires_grad(module, val):
         p.requires_grad = val
 
 def visualize_importance_linelike(step, direct_result, mid_result):
-    base_path = "/home/zhangjw/nerfstudio/outputs/lego_sta/flexnerf/logs"
+    #@
+    return
+    base_path = "/media/user11209/D/git_clone_file/nerfstudio/outputs/lego_sta/flexnerf/logs"
     import os
     if not os.path.exists(base_path + "/linelike_imgs"):
         os.mkdir(base_path + "/linelike_imgs")

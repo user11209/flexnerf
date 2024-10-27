@@ -28,8 +28,8 @@ import code
 
 DIY = False
 DEBUG = True
-DEBUG_file = "/home/zhangjw/nerfstudio/external/flexnerf/log_file.txt"
-DEBUG_over_file = "/home/zhangjw/nerfstudio/external/flexnerf/over_log_file.txt"
+DEBUG_file = "/media/user11209/D/git_clone_file/nerfstudio/external/flexnerf/log_file.txt"
+DEBUG_over_file = "/media/user11209/D/git_clone_file/nerfstudio/external/flexnerf/over_log_file.txt"
 DEBUG_FLAG = 0
 DEBUG_FLAG_INNER = 0
 
@@ -1344,6 +1344,7 @@ class FlexNerfField(Field):
 
     @torch.inference_mode()
     def refine_samples_for_tetra(self, step, update_original=True, use_inter_level_importance=True, start_step=0, initializing=False, interval=1000):
+        #@note interval for clearing auxilary net work is here
         if (step % (4*interval)) == 0 and step != 0:
             is_weight = True
             for param in self.mlp_density_auxilary.parameters():
